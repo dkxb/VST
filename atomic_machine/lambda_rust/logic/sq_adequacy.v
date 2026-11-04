@@ -17,14 +17,14 @@ Set Default Proof Using "Type".
 
 Class lrSqGpreS Σ := LrSqGpreS {
   lrSqGpreS_inv :: invGpreS Σ;
-  lrSqGpreS_heap :: inG Σ (authR heapUR);
-  lrSqGpreS_heap_freeable :: inG Σ (authR heap_freeableUR)
+  lrSqGpreS_heap :: ghost_mapG Σ loc val;
+  lrSqGpreS_heap_freeable :: inG Σ (authR sq_freeableUR)
 }.
 
 Definition lrSqΣ : gFunctors :=
   #[invΣ;
-    GFunctor (constRF (authR heapUR));
-    GFunctor (constRF (authR heap_freeableUR))].
+    ghost_mapΣ loc val;
+    GFunctor (constRF (authR sq_freeableUR))].
 Global Instance subG_lrSqGpreS {Σ} : subG lrSqΣ Σ -> lrSqGpreS Σ.
 Proof. solve_inG. Qed.
 
@@ -33,12 +33,11 @@ Theorem sq_adequacy Σ `{!lrSqGpreS Σ} (e : sq_expr) (m : lr_mem) (φ : sq_val 
   adequate NotStuck e m (fun v _ => φ v).
 Proof.
   intros Hwp; eapply (wp_adequacy _ _); iIntros (??).
-  iMod (own_alloc (● to_heap (sq_heap m))) as (vγ) "Hvγ".
-  { apply (auth_auth_valid (to_heap _)), to_heap_valid. }
-  iMod (own_alloc (● (∅ : heap_freeableUR))) as (fγ) "Hfγ";
+  iMod (ghost_map_alloc m) as (vγ) "[Hvγ _]".
+  iMod (own_alloc (● (∅ : sq_freeableUR))) as (fγ) "Hfγ";
     first by apply auth_auth_valid.
-  set (Hheap := HeapGS _ _ _ vγ fγ).
-  iModIntro. iExists (fun m _ => heap_ctx (sq_heap m)), (fun _ => True%I). iSplitL.
+  set (Hheap := SqHeapGS _ _ _ vγ fγ).
+  iModIntro. iExists (fun m _ => sq_heap m), (fun _ => True%I). iSplitL.
   { iExists ∅. by iFrame. }
   by iApply (Hwp (LrSqGS _ _ Hheap)).
 Qed.

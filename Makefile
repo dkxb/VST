@@ -890,6 +890,7 @@ lambda-rust-adequacy: lambda-rust-equivalence \
 	atomic_machine/lambda_rust/adequacy.vo
 
 lambda-rust-logic: lambda-rust-adequacy \
+	atomic_machine/lambda_rust/logic/sq_heap.vo \
 	atomic_machine/lambda_rust/logic/sq_logic.vo \
 	atomic_machine/lambda_rust/logic/sq_adequacy.vo \
 	atomic_machine/lambda_rust/logic/sqex_logic.vo \

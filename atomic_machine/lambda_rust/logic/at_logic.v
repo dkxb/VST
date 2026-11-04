@@ -12,7 +12,7 @@
   free index; [at_adequacy.v] relates the two.
 
   The logic is built on the sequential one of [sq_logic.v].  Its state
-  interpretation is the sequential one, [heap_ctx (sq_heap m)], together
+  interpretation is the sequential one, [sq_heap m], together
   with the reservations ([at_resv]), and a [Core_Try] step is a step of
   [sq_lang]: the rules for the non-atomic operations run the corresponding
   rule of [sq_logic.v] for that step ([sq_wp_try], [sq_wp_step]) and only add
@@ -551,7 +551,7 @@ Section state_interp.
       
       The [lrAtGS_reads_name] ghost state only appears between Try and Commit,
       does not appear in the proof rule's logic level, and the model for the
-      points-to is exactly the same as lambda-rust's. *)
+      points-to tracks only the value and its ownership fraction. *)
       ghost_map_auth lrAtGS_reads_name 1 R ∗ ([∗ map] x ∈ R, x.1.1 ↦{x.1.2} x.2) ∗
       (* Similarly, a pending write adds the write location and value to [Wm]
       and keeps the points-to until commit. *)
@@ -563,7 +563,7 @@ Section state_interp.
 
   (** The sequential state interpretation plus the ghosts for the reservations. *)
   Definition at_si (m : lr_mem) (mu : rw_map) : iProp Σ :=
-    heap_ctx (sq_heap m) ∗ at_resv m mu.
+    sq_heap m ∗ at_resv m mu.
 End state_interp.
 
 Global Instance lrAtGS_irisGS `{!lrAtGS Σ} : irisGS at_lang Σ := {
@@ -579,21 +579,19 @@ Section resv.
 
   Lemma heap_pointsto_excl' l q v w : l ↦ v ∗ l ↦{q} w ⊢ ⌜False⌝.
   Proof.
-    rewrite heap_pointsto_eq -own_op -auth_frag_op own_valid internal_cmra_valid_discrete.
-    eapply bi.pure_elim; [done|]=> /auth_frag_valid /=.
-    rewrite singleton_op -pair_op singleton_valid=> -[[Hq _] _].
-    by apply (exclusive_l 1%Qp q) in Hq.
+    iIntros "[H1 H2]".
+    iDestruct (ghost_map_elem_ne with "H1 H2") as %Hne. done.
   Qed.
 
   Lemma heap_pointsto_excl l q v w : l ↦ v -∗ l ↦{q} w -∗ False.
   Proof. iIntros "H1 H2". by iDestruct (heap_pointsto_excl' with "[$H1 $H2]") as %[]. Qed.
 
   Lemma at_resv_frac m mu l q v :
-    heap_ctx (sq_heap m) -∗ at_resv m mu -∗ l ↦{q} v -∗
+    sq_heap m -∗ at_resv m mu -∗ l ↦{q} v -∗
     ⌜m !! l = Some v /\ exists n, mu !! l = Some (Rst n)⌝.
   Proof.
     iIntros "Hσ (%R & %Wm & %P & HR & HRd & HW & HWd & HP & %Hrel) Hv".
-    iDestruct (heap_read with "Hσ Hv") as %[? [_ Hm]%lookup_sq_heap_Some].
+    iDestruct (sq_heap_read with "Hσ Hv") as %Hm.
     pose proof (proj1 Hrel l) as Hl. destruct (mu !! l) as [[n | ] | ] eqn:Hmu.
     - eauto.
     - destruct Hl as [_ [w Hw]]. iDestruct (big_sepM_lookup with "HWd") as "Hw"; [ done | ].
@@ -602,11 +600,11 @@ Section resv.
   Qed.
 
   Lemma at_resv_full m mu l v :
-    heap_ctx (sq_heap m) -∗ at_resv m mu -∗ l ↦ v -∗
+    sq_heap m -∗ at_resv m mu -∗ l ↦ v -∗
     ⌜m !! l = Some v /\ mu !! l = Some (Rst 0)⌝.
   Proof.
     iIntros "Hσ (%R & %Wm & %P & HR & HRd & HW & HWd & HP & %Hrel) Hv".
-    iDestruct (heap_read_1 with "Hσ Hv") as %[_ Hm]%lookup_sq_heap_Some.
+    iDestruct (sq_heap_read with "Hσ Hv") as %Hm.
     pose proof (proj1 Hrel l) as Hl. destruct (mu !! l) as [[[ | n] | ] | ] eqn:Hmu.
     - done.
     - destruct Hl as [Hc _]. destruct (resv_count_pos R l) as (k & x & Hk & <-); [ lia | ].
@@ -618,13 +616,13 @@ Section resv.
   Qed.
 
   Lemma at_resv_full_vec m mu l vl :
-    heap_ctx (sq_heap m) -∗ at_resv m mu -∗ l ↦∗ vl -∗
+    sq_heap m -∗ at_resv m mu -∗ l ↦∗ vl -∗
     ⌜forall z, (0 <= z < Z.of_nat (length vl))%Z ->
        is_Some (m !! (l +ₗ z)) /\ mu !! (l +ₗ z) = Some (Rst 0)⌝.
   Proof.
     iIntros "Hσ Hr Hvl". iInduction vl as [ | v vl IH ] forall (l).
     { iPureIntro. simpl. lia. }
-    rewrite heap_pointsto_vec_cons. iDestruct "Hvl" as "[Hv Hvl]".
+    rewrite sq_pointsto_vec_cons. iDestruct "Hvl" as "[Hv Hvl]".
     iDestruct (at_resv_full with "Hσ Hr Hv") as %[Hm Hmu].
     iDestruct ("IH" with "Hσ Hr Hvl") as %Hvl.
     iPureIntro. intros z Hz. destruct (decide (z = 0%Z)) as [-> | Hne].
@@ -856,10 +854,10 @@ Section sq_step.
 
   Lemma sq_wp_try E (e : sq_expr) (Ψ : sq_val -> iProp Σ) m T :
     to_val e = None ->
-    WP e @ E {{ Ψ }} -∗ heap_ctx (sq_heap m) ={E,∅}=∗
+    WP e @ E {{ Ψ }} -∗ sq_heap m ={E,∅}=∗
     ⌜exists T' e' m', lr_step e m T' e' m'⌝ ∗
     ∀ (e' : sq_expr) m', ⌜lr_step e m T e' m'⌝ -∗ £ 1 ={∅}=∗ ▷ |={∅,E}=>
-      heap_ctx (sq_heap m') ∗ WP e' @ E {{ Ψ }}.
+      sq_heap m' ∗ WP e' @ E {{ Ψ }}.
   Proof.
     iIntros (Hv) "Hwp Hσ". rewrite wp_unfold /wp_pre /= Hv.
     iMod ("Hwp" $! m 0%nat T [] 0%nat with "Hσ") as "[%Hred Hstep]".
@@ -876,8 +874,8 @@ Section sq_step.
 
   Lemma sq_wp_step E (e : sq_expr) (Ψ : sq_val -> iProp Σ) m T (e' : sq_expr) m' :
     lr_step e m T e' m' ->
-    WP e @ E {{ Ψ }} -∗ heap_ctx (sq_heap m) -∗ £ 1 ={E,∅}=∗ ▷ |={∅,E}=>
-      heap_ctx (sq_heap m') ∗ WP e' @ E {{ Ψ }}.
+    WP e @ E {{ Ψ }} -∗ sq_heap m -∗ £ 1 ={E,∅}=∗ ▷ |={∅,E}=>
+      sq_heap m' ∗ WP e' @ E {{ Ψ }}.
   Proof.
     iIntros (Hs) "Hwp Hσ Hc".
     iMod (sq_wp_try _ _ _ _ T with "Hwp Hσ") as "[_ Hstep]"; [ by eapply lr_step_not_val | ].
@@ -1117,7 +1115,7 @@ Proof.
   iIntros (<- Φ) ">Hv HΦ". iApply wp_lift_atomic_step; [ done | ].
   iIntros ([m mu] ns κ κs nt) "[Hσ Hr]".
   iDestruct (at_resv_full with "Hσ Hr Hv") as %[Hm Hmu].
-  iMod (heap_write _ _ _ v with "Hσ Hv") as "[Hσ Hv]". rewrite -sq_heap_insert.
+  iMod (sq_heap_write _ _ _ v with "Hσ Hv") as "[Hσ Hv]".
   iModIntro. iSplit.
   { iPureIntro. do 4 eexists. eapply AtWrite.
     - apply lr_head_external_external, LRWriteScE, to_of_val.
@@ -1177,7 +1175,7 @@ Proof.
   rewrite Hm in Hm'. injection Hm' as <-.
   destruct Hcase as [(_ & _ & -> & ->) | [(Hneq & _) | (_ & Hmu' & _)]];
     [ | by destruct lit1; inv_lr_lit | done ].
-  iMod (heap_write with "Hσ Hv") as "[Hσ Hv]". rewrite -sq_heap_insert.
+  iMod (sq_heap_write with "Hσ Hv") as "[Hσ Hv]".
   iModIntro. iSplitL "Hσ Hr".
   { iFrame "Hσ". iApply (at_resv_store with "Hr"). by eexists. }
   iSplitL; [ | done ]. simpl. by iApply "HΦ".
@@ -1244,7 +1242,7 @@ Proof.
   destruct (at_step_cas_inv _ _ _ _ _ _ _ _ _ Hstep) as (-> & -> & vc & Hmc & Hcase).
   rewrite Hm in Hmc. injection Hmc as <-.
   destruct Hcase as [(_ & _ & -> & ->) | [(Hneq & -> & ->) | (_ & Hmu' & _)]]; [ | | done ].
-  - iMod (heap_write with "Hσ Hv") as "[Hσ Hv]". rewrite -sq_heap_insert.
+  - iMod (sq_heap_write with "Hσ Hv") as "[Hσ Hv]".
     iModIntro. iSplitL "Hσ Hr".
     { iFrame "Hσ". iApply (at_resv_store with "Hr"). by eexists. }
     iSplitL; [ | done ]. simpl. iApply ("HΦ" $! true). iFrame.

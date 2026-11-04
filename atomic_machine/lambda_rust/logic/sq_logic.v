@@ -1,33 +1,12 @@
-(**
-  A program logic for the sequential lambda-Rust semantics of [sq_sem.v],
-  after lambda-Rust's [lrust.lang.lifting].
-
-  [sq_lang] is that semantics as an Iris language with a single thread: its
-  head steps are the [lr_head_step]s, whose memory events become the step's
-  observations.  It has no atomic operations: a thread at a sequentially
-  consistent access or CAS ([lr_external]) is stuck here, as is one at a
-  [Fork], since the semantics of these exists only at the level of the
-  atomic machine ([at_logic.v]).
-
-  The logic has the shape of lambda-Rust's: the heap resources of
-  [lrust.lang.heap] ([l ↦{q} v], [†l…n]), with the state interpretation
-  [heap_ctx (sq_heap m)], in which every location is unlocked, and
-  lambda-Rust's rules for the non-atomic fragment.
-
-  The carrier types of [sq_lang] are aliases ([sq_expr], [sq_val], ...), so
-  that its canonical structures do not take over lambda-Rust's [lrust_lang]:
-  a [WP] about [sq_lang] is on an [sq_expr], with a postcondition on
-  [sq_val] (hence the [RET (v : sq_val)] below).
-*)
+(** A program logic for the sequential lambda-Rust semantics of [sq_sem.v]. *)
 
 From iris.algebra Require Import auth.
 From iris.program_logic Require Export weakestpre ectx_language ectxi_language
   lifting ectx_lifting.
 From iris.proofmode Require Import proofmode.
-From lrust.lang Require Export heap.
 From lrust.lang Require Import lifting.
 Require Import VST.atomic_machine.atomic_machine.
-Require Export VST.atomic_machine.lambda_rust.sq_sem.
+Require Export VST.atomic_machine.lambda_rust.logic.sq_heap.
 
 Set Default Proof Using "Type".
 #[local] Set Warnings "-redundant-canonical-projection".
@@ -70,57 +49,32 @@ Canonical Structure sq_lang := LanguageOfEctx sq_ectx_lang.
 
 Global Instance sq_state_inhabited : Inhabited lr_mem := populate ∅.
 
-(** * The heap
+(** A fresh block in the value-only memory. *)
+Definition sq_fresh_block (m : lr_mem) : block :=
+  fresh (foldr (λ l, ({[l.1]} ∪.)) ∅ (elements (dom m : gset loc)) : gset block).
 
-    The memory as a lambda-Rust heap with every location unlocked. *)
-
-Definition sq_heap (m : lr_mem) : state := (fun v => (RSt 0, v)) <$> m.
-
-Lemma lookup_sq_heap (m : lr_mem) (l : loc) : sq_heap m !! l = (fun v => (RSt 0, v)) <$> m !! l.
-Proof. apply lookup_fmap. Qed.
-
-Lemma lookup_sq_heap_None (m : lr_mem) (l : loc) : sq_heap m !! l = None <-> m !! l = None.
-Proof. by rewrite lookup_sq_heap fmap_None. Qed.
-
-Lemma lookup_sq_heap_Some (m : lr_mem) (l : loc) st v :
-  sq_heap m !! l = Some (st, v) -> st = RSt 0 /\ m !! l = Some v.
-Proof. rewrite lookup_sq_heap. intros (? & -> & [= <- <-])%fmap_Some. done. Qed.
-
-Lemma sq_heap_insert (m : lr_mem) (l : loc) (v : val) : sq_heap (<[l := v]> m) = <[l := (RSt 0, v)]> (sq_heap m).
-Proof. apply fmap_insert. Qed.
-
-Lemma fmap_alloc_gmap {A B} (f : A -> B) (x : A) (l : loc) (n : nat) (m : gmap loc A) :
-  f <$> alloc_gmap x l n m = alloc_gmap (f x) l n (f <$> m).
-Proof. revert l. induction n as [ | n IH ]; intros l; [ done | ]. simpl. by rewrite fmap_insert IH. Qed.
-
-Lemma fmap_free_gmap {A B} (f : A -> B) (l : loc) (n : nat) (m : gmap loc A) :
-  f <$> free_gmap l n m = free_gmap l n (f <$> m).
-Proof. revert l. induction n as [ | n IH ]; intros l; [ done | ]. simpl. by rewrite fmap_delete IH. Qed.
-
-Lemma sq_heap_alloc (m : lr_mem) (l : loc) (n : nat) :
-  sq_heap (alloc_gmap (LitV LitPoison) l n m) = init_mem l n (sq_heap m).
-Proof. by rewrite /sq_heap fmap_alloc_gmap init_mem_equiv. Qed.
-
-Lemma sq_heap_free (m : lr_mem) (l : loc) (n : nat) : sq_heap (free_gmap l n m) = free_mem l n (sq_heap m).
-Proof. by rewrite /sq_heap fmap_free_gmap free_mem_equiv. Qed.
+Lemma sq_is_fresh_block m i : m !! (sq_fresh_block m, i) = None.
+Proof.
+  assert (∀ (l : loc) ls (X : gset block),
+    l ∈ ls -> l.1 ∈ foldr (λ l, ({[l.1]} ∪.)) X ls) as Hblock.
+  { induction 1; set_solver. }
+  rewrite /sq_fresh_block -(not_elem_of_dom (D := gset loc)) -elem_of_elements.
+  move=> /(Hblock _ _ ∅) /=. apply is_fresh.
+Qed.
 
 Lemma sq_alloc_fresh (m : lr_mem) : exists l, forall z, m !! (l +ₗ z)%L = None.
-Proof.
-  exists (fresh_block (sq_heap m), 0). intros z.
-  apply lookup_sq_heap_None, (is_fresh_block (sq_heap m) (0 + z)).
-Qed.
+Proof. exists (sq_fresh_block m, 0). intros z. apply sq_is_fresh_block. Qed.
 
 (** * The logic *)
 
 Class lrSqGS Σ := LrSqGS {
   lrSqGS_invGS : invGS Σ;
-  lrSqGS_heapGS :: heapGS Σ
+  lrSqGS_heapGS :: sq_heapGS Σ
 }.
 
 Global Instance lrSqGS_irisGS `{!lrSqGS Σ} : irisGS sq_lang Σ := {
   iris_invGS := lrSqGS_invGS;
-  (* state_interp is the same as the one in lambda-rust. *)
-  state_interp m _ _ _ := heap_ctx (sq_heap m);
+  state_interp m _ _ _ := sq_heap m;
   fork_post _ := True%I;
   num_laters_per_step _ := 0%nat;
   state_interp_mono _ _ _ _ := fupd_intro _ _
@@ -216,7 +170,7 @@ Global Instance sq_pure_if b e1 e2 :
   PureExec True 1 (If (Lit (lit_of_bool b)) e1 e2 : sq_expr) (if b then e1 else e2) | 1.
 Proof. destruct b; solve_pure_exec. Qed.
 
-(** Heap *)
+(** WP rules *)
 Lemma sq_wp_alloc E (n : Z) :
   0 < n ->
   {{{ True }}} (Alloc (Lit $ LitInt n) : sq_expr) @ E
@@ -227,8 +181,8 @@ Proof.
   { iPureIntro. destruct (sq_alloc_fresh m) as [l Hl].
     eexists _, _, _, _. apply SqHeadStep. by apply LRAllocS. }
   iNext; iIntros (v2 m2 efs Hstep) "_"; inv_sq_step.
-  iMod (heap_alloc with "Hσ") as "[Hσ Hl]"; [done | by intros z; apply lookup_sq_heap_None | ].
-  iModIntro; iSplit=> //. rewrite sq_heap_alloc. iFrame.
+  iMod (sq_heap_alloc with "Hσ") as "[Hσ Hl]"; [done | done | ].
+  iModIntro; iSplit=> //. iFrame.
   iApply ("HΦ" $! _ (Z.to_nat n)). iFrame. iPureIntro. rewrite Z2Nat.id; lia.
 Qed.
 
@@ -240,13 +194,11 @@ Lemma sq_wp_free E (n:Z) l vl :
 Proof.
   iIntros (? Φ) "[>Hmt >Hf] HΦ". iApply wp_lift_atomic_base_step_no_fork; auto.
   iIntros (m ? κ κs n') "Hσ".
-  iMod (heap_free _ _ _ n with "Hσ Hmt Hf") as "(% & %Hdom & Hσ)"=>//.
-  assert (Hdom' : forall z, is_Some (m !! (l +ₗ z)) <-> 0 ≤ z < n).
-  { intros z. rewrite -Hdom lookup_sq_heap fmap_is_Some. done. }
+  iMod (sq_heap_free _ _ _ n with "Hσ Hmt Hf") as "(% & %Hdom & Hσ)"=>//.
   iModIntro; iSplit.
   { iPureIntro. eexists _, _, _, _. apply SqHeadStep. by apply LRFreeS. }
   iNext; iIntros (v2 m2 efs Hstep) "_"; inv_sq_step.
-  iModIntro; iSplit=> //. rewrite sq_heap_free. iFrame. by iApply "HΦ".
+  iModIntro; iSplit=> //. iFrame. by iApply "HΦ".
 Qed.
 
 Lemma sq_wp_read_na E l q v :
@@ -254,8 +206,7 @@ Lemma sq_wp_read_na E l q v :
   {{{ RET (v : sq_val); l ↦{q} v }}}.
 Proof.
   iIntros (?) ">Hv HΦ". iApply wp_lift_atomic_base_step_no_fork; auto.
-  iIntros (m ? κ κs n) "Hσ". iDestruct (heap_read with "Hσ Hv") as %[k Hl].
-  apply lookup_sq_heap_Some in Hl as [_ Hl].
+  iIntros (m ? κ κs n) "Hσ". iDestruct (sq_heap_read with "Hσ Hv") as %Hl.
   iModIntro; iSplit.
   { iPureIntro. eexists _, _, _, _. apply SqHeadStep. by apply LRReadNaS. }
   iNext; iIntros (v2 m2 efs Hstep) "_"; inv_sq_step.
@@ -268,13 +219,12 @@ Lemma sq_wp_write_na E l e v v' :
   {{{ RET (LitV LitPoison : sq_val); l ↦ v }}}.
 Proof.
   iIntros (<- Φ) ">Hv HΦ". iApply wp_lift_atomic_base_step_no_fork; auto.
-  iIntros (m ? κ κs n) "Hσ". iDestruct (heap_read_1 with "Hσ Hv") as %Hl.
-  apply lookup_sq_heap_Some in Hl as [_ Hl].
-  iMod (heap_write _ _ _ v with "Hσ Hv") as "[Hσ Hv]".
+  iIntros (m ? κ κs n) "Hσ". iDestruct (sq_heap_read with "Hσ Hv") as %Hl.
+  iMod (sq_heap_write _ _ _ v with "Hσ Hv") as "[Hσ Hv]".
   iModIntro; iSplit.
   { iPureIntro. do 4 eexists. apply SqHeadStep. econstructor; [ apply to_of_val | done ]. }
   iNext; iIntros (v2 m2 efs Hstep) "_"; inv_sq_step.
-  iModIntro; iSplit=> //. rewrite sq_heap_insert. iFrame. by iApply "HΦ".
+  iModIntro; iSplit=> //. iFrame. by iApply "HΦ".
 Qed.
 
 Lemma sq_wp_eq_loc E (l1 : loc) (l2: loc) q1 q2 v1 v2 P (Φ : sq_val -> iProp Σ) :
@@ -304,11 +254,11 @@ Proof.
     inv_sq_step. iSplitR=>//. inv_sq_lit.
     + iExFalso. iDestruct "HP" as "[Hl1 _]".
       iDestruct "Hl1" as (??) "Hl1".
-      iDestruct (heap_read with "Hσ1 Hl1") as %[? [_ Hl]%lookup_sq_heap_Some].
+      iDestruct (sq_heap_read with "Hσ1 Hl1") as %Hl.
       match goal with H : _ = None |- _ => by rewrite H in Hl end.
     + iExFalso. iDestruct "HP" as "[_ [Hl2 _]]".
       iDestruct "Hl2" as (??) "Hl2".
-      iDestruct (heap_read with "Hσ1 Hl2") as %[? [_ Hl]%lookup_sq_heap_Some].
+      iDestruct (sq_heap_read with "Hσ1 Hl2") as %Hl.
       match goal with H : _ = None |- _ => by rewrite H in Hl end.
     + iDestruct "HP" as "[_ [_ $]]". done.
 Qed.
