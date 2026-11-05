@@ -148,11 +148,16 @@ Section SeqLang.
   Local Notation mem_ev := (mem_ev(Loc:=Loc)).
   Local Notation rw_map := (rw_map(Loc:=Loc)).
 
-  Inductive atomic_op : Type :=
+  (* the kind of external functions. Should probably be just a general
+     placeholder (maybe only expose a string?) and the supported external calls
+     should be defined on a lifted layer that gives semantics to (a subset of
+     supported) external calls. *)
+  Inductive atomic_op {thrd_st : Type} : Type :=
   | ALoad : Layout -> Loc -> atomic_op
   | AStore : Layout -> Loc -> Val -> atomic_op
   | ACAS : Layout -> Loc -> Val (* expected val *) ->
-          Val (* new val*) -> atomic_op.
+          Val (* new val*) -> atomic_op
+  | ASpawn : thrd_st -> atomic_op.
 
   Class sqlang : Type := {
     (* the shared memory *)
@@ -168,7 +173,7 @@ Section SeqLang.
     (* An exposed atomic operation and a continuation that takes its optional
        return value. *)
     sqlang_at_external :
-      sqlang_thrd_st -> atomic_op ->
+      sqlang_thrd_st -> @atomic_op sqlang_thrd_st ->
       (option Val -> sqlang_thrd_st) -> Prop;
 
     (** Return from an atomic operation: [sqlang_after_external c ov c']
@@ -176,12 +181,6 @@ Section SeqLang.
         operation returns [ov]. *)
     sqlang_after_external :
       sqlang_thrd_st -> option Val -> sqlang_thrd_st -> Prop;
-
-    (** Thread creation: [sqlang_spawn c c' c_new] means that [c] is
-        about to spawn a new thread starting at [c_new] and continue as
-        [c']. *)
-    sqlang_spawn :
-      sqlang_thrd_st -> sqlang_thrd_st -> sqlang_thrd_st -> Prop;
 
     (** Terminal states: a thread in a final state with no pending events
         has finished, so being unable to step is not an error. *)
@@ -289,12 +288,12 @@ Section AtomicMachine.
 
   (** Thread creation.  The new thread gets the least unused index, so
       a pool whose indices are an initial segment of [nat] stays one. *)
-  | Spawn : forall tp m μ i c c' c_new j
+  | Spawn : forall tp m μ i c c_new K j
       (Hget : tp !! i = Some (Running c []))
-      (Hspawn : sqlang_spawn c c' c_new)
+      (Hspawn : at_external c (ASpawn c_new) K)
       (Hfree : tp !! j = None)
       (Hleast : forall k, k < j -> is_Some (tp !! k)),
-      at_step (AMCfg tp m μ) (AMCfg (<[j := Running c_new []]> (<[i := Running c' []]> tp)) m μ).
+      at_step (AMCfg tp m μ) (AMCfg (<[j := Running c_new []]> (<[i := Running (K None) []]> tp)) m μ).
 
   Definition am_steps : relation am_cfg := rtc at_step.
 
