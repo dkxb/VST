@@ -747,7 +747,11 @@ Lemma lr_machine_sc_read tp m mu i c l v K :
   at_step
     (AMCfg tp m mu)
     (AMCfg (<[i := Running (K (Some v)) []]> tp) m mu).
-Proof. intros. eapply SC_Read; eauto. by repeat constructor. Qed.
+Proof.
+  intros Hget Hext Hmu Hm.
+  refine (SC_Read tp m mu i c tt l v K Hget Hext _ Hm).
+  by repeat constructor.
+Qed.
 
 Lemma lr_machine_sc_write tp m mu i c l v v' K :
   tp !! i = Some (Running c []) ->
@@ -758,7 +762,8 @@ Lemma lr_machine_sc_write tp m mu i c l v v' K :
     (AMCfg tp m mu)
     (AMCfg (<[i := Running (K None) []]> tp) (<[l := v]> m) mu).
 Proof.
-  intros ? ? Hmu Hm. eapply SC_Write; eauto; [ by repeat constructor | ].
+  intros Hget Hext Hmu Hm.
+  refine (SC_Write tp m mu i c tt l v _ K Hget Hext _ _); [ by repeat constructor | ].
   simpl. lr_unfold. by rewrite Hm.
 Qed.
 
@@ -799,7 +804,10 @@ Lemma lr_machine_spawn tp m mu i K e j :
   at_step
     (AMCfg tp m mu)
     (AMCfg (<[j := Running e []]> (<[i := Running (fill K (Lit LitPoison)) []]> tp)) m mu).
-Proof. intros. eapply Spawn; eauto. constructor. Qed.
+Proof.
+  intros. eapply (Spawn _ _ _ _ _ e (fun _ => fill K (Lit LitPoison)) j);
+    eauto. constructor. constructor.
+Qed.
 
 (** * Forward simulation: reference steps are matched by machine steps *)
 
@@ -1115,10 +1123,10 @@ Proof.
   - (* SC_Cas_Stuck: the crashed thread matches anything. *)
     apply lr_reach_bwd_pack_refl; [ | exact Hheaps ]. by eapply lr_pools_match_insert_r.
   - (* Spawn: the reference forks, appending at the machine's new index. *)
-    inversion Hspawn as [K e0 Hc0 Hc1 Hc2]; subst c c' c_new.
+    inversion Hspawn as [K0 e0 op k Hhead]; subst. inversion Hhead; subst.
     pose proof (lr_pools_match_least_free _ _ _ _ Hpools Hfree Hleast) as ->.
-    exists (<[i := fill K (Lit LitPoison)]> threads ++ [e0], sigma). split; [ split | ].
-    + simpl. rewrite <- (length_insert threads i (fill K (Lit LitPoison))).
+    exists (<[i := fill K0 (Lit LitPoison)]> threads ++ [e_new], sigma). split; [ split | ].
+    + simpl. rewrite <- (length_insert threads i (fill K0 (Lit LitPoison))).
       apply lr_pools_match_snoc; [ by apply lr_pools_match_insert | done ].
     + exact Hheaps.
     + apply rtc_once. eapply lr_reference_step_at_spawn; [ exact He | ].

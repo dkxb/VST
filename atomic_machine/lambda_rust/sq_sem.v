@@ -1,10 +1,4 @@
-(**
-  Single-threaded lambda-Rust semantics for the atomic machine.
-
-  Sequentially consistent operations are exposed through [lr_external].
-  Pure computation, non-atomic accesses, allocation, and deallocation are
-  handled by [lr_step]; [Fork] by [lr_spawn].
-*)
+(** Single-threaded lambda-Rust semantics for the atomic machine. *)
 
 From Stdlib Require Import ZArith Lia List Bool.
 From stdpp Require Import base gmap list.
@@ -137,7 +131,7 @@ Inductive lr_step
       (fill K e1) m1 T
       (fill K e2) m2.
 
-Local Notation lr_atomic_op := (@atomic_op loc val lr_layout).
+Local Notation lr_atomic_op := (@atomic_op loc val lr_layout expr).
 
 Definition lr_result_expr (ov : option val) : expr :=
   match ov with
@@ -145,7 +139,7 @@ Definition lr_result_expr (ov : option val) : expr :=
   | None => stuck_term
   end.
 
-(** SC operations at the head of an evaluation context. *)
+(** Identify valid external calls. *)
 Inductive lr_head_external
     : expr -> lr_atomic_op -> (option val -> expr) -> Prop :=
 | LRReadScE l :
@@ -162,7 +156,9 @@ Inductive lr_head_external
     to_val e2 = Some (LitV lit2) ->
     lr_head_external
       (CAS (Lit (LitLoc l)) e1 e2)
-      (ACAS tt l (LitV lit1) (LitV lit2)) lr_result_expr.
+      (ACAS tt l (LitV lit1) (LitV lit2)) lr_result_expr
+| LRSpawnE e :
+    lr_head_external (Fork e) (ASpawn e) (fun _ => Lit LitPoison).
 
 (** Evaluation-context closure of [lr_head_external]. *)
 Inductive lr_external
@@ -173,32 +169,24 @@ Inductive lr_external
       (fill K e) op
       (fun ov => fill K (k ov)).
 
-(** Return from an SC operation: the thread continues as the operation's
-    continuation applied to the returned value. *)
 Inductive lr_after_external : expr -> option val -> expr -> Prop :=
 | LRAfterExternal e op k ov :
     lr_external e op k ->
     lr_after_external e ov (k ov).
 
-(** [Fork] at the head of an evaluation context: the parent continues
-    with [LitPoison], as in the reference [ForkS]. *)
-Inductive lr_spawn : expr -> expr -> expr -> Prop :=
-| LRSpawn K e :
-    lr_spawn (fill K (Fork e)) (fill K (Lit LitPoison)) e.
-
 (** A thread has terminated once it is a value. *)
 Definition lr_final (e : expr) : Prop := is_Some (to_val e).
 
 #[global] Canonical Structure lr_language :
-    @sqlang loc val _ _ lr_mem lr_layout :=
+    @sqlang loc val _ _ lr_mem lr_layout expr :=
   {| sqlang_memory := lr_memory;
      sqlang_thrd_st := expr;
      sqlang_true_val := LitV (lit_of_bool true);
      sqlang_false_val := LitV (lit_of_bool false);
      sqlang_step := lr_step;
+     sqlang_expr_to_thrd_st := id;
      sqlang_at_external := lr_external;
      sqlang_after_external := lr_after_external;
-     sqlang_spawn := lr_spawn;
      sqlang_final := lr_final;
      sqlang_ValEq := lr_val_eq;
      sqlang_ValNEq := lr_val_neq |}.

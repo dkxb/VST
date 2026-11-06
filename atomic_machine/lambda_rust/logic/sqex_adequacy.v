@@ -11,15 +11,15 @@ Import ListNotations.
 (** The external-call semantics.  *)
 Class satisfy_conc_triples Σ `{!ExtCallSems lr_language} : Prop := {
   conc_wp_read_sc : forall `{!lrSqGS Σ} E l q v,
-    {{{ ▷ l ↦{q} v }}} EXWP (Read ScOrd (Lit $ LitLoc l) : sqex_expr) @ E
-    {{{ RET (v : sqex_val); l ↦{q} v }}};
-  conc_wp_write_sc : forall `{!lrSqGS Σ} E l (e : sqex_expr) v v',
+    {{{ ▷ l ↦{q} v }}} EXWP (Read ScOrd (Lit $ LitLoc l) : sq_expr) @ E
+    {{{ RET (v : sq_val); l ↦{q} v }}};
+  conc_wp_write_sc : forall `{!lrSqGS Σ} E l (e : sq_expr) v v',
     IntoVal e v ->
-    {{{ ▷ l ↦ v' }}} EXWP (Write ScOrd (Lit $ LitLoc l) e : sqex_expr) @ E
-    {{{ RET (LitV LitPoison : sqex_val); l ↦ v }}};
-  conc_wp_fork : forall `{!lrSqGS Σ} E (e : sqex_expr),
-    {{{ ▷ EXWP e {{ _, True }} }}} EXWP (Fork e : sqex_expr) @ E
-    {{{ RET (LitV LitPoison : sqex_val); True }}}
+    {{{ ▷ l ↦ v' }}} EXWP (Write ScOrd (Lit $ LitLoc l) e : sq_expr) @ E
+    {{{ RET (LitV LitPoison : sq_val); l ↦ v }}};
+  conc_wp_fork : forall `{!lrSqGS Σ} E (e : sq_expr),
+    {{{ ▷ EXWP e {{ _, True }} }}} EXWP (Fork e : sq_expr) @ E
+    {{{ RET (LitV LitPoison : sq_val); True }}}
   (* other atomic operations *)
 }.
 
@@ -41,7 +41,7 @@ Definition at_sem_adequate (tp : list sq_expr) (φs : list (sq_val -> Prop)) (m 
 (* EXWP uses basic updates for normal steps and allows fupd around external calls and spawning. *)
 Theorem sqex_adequacy Σ
     `{!lrSqGpreS Σ}
-    (e : sqex_expr) (φ : sqex_val -> Prop) (m : lr_mem) :
+    (e : sq_expr) (φ : sq_val -> Prop) (m : lr_mem) :
   (forall `{!lrSqGS Σ} `{!ExtCallSems lr_language} `{!satisfy_conc_triples Σ},
   ⊢ EXWP e {{ v, ⌜φ v⌝ }}) ->
   at_sem_adequate [e] [φ] m.

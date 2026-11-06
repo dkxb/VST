@@ -615,7 +615,8 @@ Proof.
     + exact (SC_Cas_Stuck tp m mu i _ ly l v_exp v_new v_cur K Hi Hext Hload Heq Ho).
     + unfold tpool. apply lookup_insert_eq.
   - (* Spawn *)
-    inversion Hspawn; subst. do 4 eexists. apply Ectx_step', ForkS.
+    inversion Hspawn as [K0 e0 op k Hhead]; subst. inversion Hhead; subst.
+    do 4 eexists. apply Ectx_step', ForkS.
 Qed.
 
 Lemma lr_fin_read_inv (mu mu' : rw_map) l :

@@ -13,7 +13,7 @@ Local Existing Instance lrSqGS_invGS.
 Definition sc_increment (p : expr) : expr :=
   (let: "n" := !ˢᶜ p in p <-ˢᶜ ("n" + #1))%E.
 
-Definition two_increments : sqex_expr :=
+Definition two_increments : sq_expr :=
   (let: "l" := Alloc #1 in
    "l" <-ˢᶜ #0 ;;
    Fork (sc_increment "l") ;;

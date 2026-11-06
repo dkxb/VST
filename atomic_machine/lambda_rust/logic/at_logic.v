@@ -95,13 +95,6 @@ Proof.
     as (-> & _). exact Hh.
 Qed.
 
-Lemma lr_spawn_head e c' c_new :
-  redex_shape e -> lr_spawn e c' c_new -> e = Fork c_new /\ c' = Lit LitPoison.
-Proof.
-  intros Hr Hspawn. inversion Hspawn as [K e1 He]; subst.
-  by destruct (fill_redex_shape_inv K (Fork c_new) _ Hr eq_refl eq_refl) as (-> & _).
-Qed.
-
 (** * The language *)
 
 Definition at_val : Type := val.
@@ -160,13 +153,13 @@ Inductive at_prim_step
     lr_val_eq m v_cur v_exp ->
     ~ writable mu (layout_to_locs l ly) ->
     at_prim_step (Running c []) (m, mu) [] StuckState (m, mu) []
-| AtSpawn c c' c_new m mu :
-    lr_spawn c c' c_new ->
-    at_prim_step (Running c []) (m, mu) [] (Running c' []) (m, mu) [Running c_new []].
+| AtSpawn c e_new K m mu :
+    lr_external c (ASpawn e_new) K ->
+    at_prim_step (Running c []) (m, mu) [] (Running (K None) []) (m, mu) [Running e_new []].
 
 Lemma at_val_stuck t σ κ t' σ' efs : at_prim_step t σ κ t' σ' efs -> at_to_val t = None.
 Proof.
-  destruct 1; simpl; eauto using lr_step_not_val, lr_external_not_val, lr_spawn_not_val.
+  destruct 1; simpl; eauto using lr_step_not_val, lr_external_not_val.
   by destruct T.
 Qed.
 
@@ -206,13 +199,14 @@ Proof.
       eapply (AtCasFail _ _ _ _ _ _ (fun ov => fill (K' ++ K) (k ov))); [ by constructor | done.. ].
     + inversion H as [K' e1 ? k Hh]; subst. rewrite -!fill_app.
       eapply AtCasStuck; [ by apply (LREctxExternal (K' ++ K) e1 _ k) | done.. ].
-    + destruct H as [K' e]. rewrite -!fill_app. constructor. by constructor.
+    + inversion H as [K' e1 op k Hh]; subst. rewrite -!fill_app.
+      eapply (AtSpawn _ _ (fun ov => fill (K' ++ K) (k ov))). by constructor.
   - intros [e T | ] σ1 κ t2 σ2 efs Hv Hstep; [ | inversion Hstep ].
     inversion Hstep as [c m mu T' c' m' mu' Hs Hrsv | c T' m mu mu' Hne Hfin
       | c ly l v k m mu Hext Hmu Hload | c ly l v m' k m mu Hext Hmu Hstore
       | c ly l ve vn vc m' k m mu Hext Hmu Hload Heq Hstore
       | c ly l ve vn vc k m mu Hext Hmu Hload Hneq | c ly l ve vn vc k m mu Hext Hload Heq Ho
-      | c c' cn m mu Hspawn ]; subst.
+      | c cn k m mu Hspawn ]; subst.
     + simpl in Hv. inversion Hs as [K' e1 ? ? e2 ? Hh He]; subst.
       destruct (fill_decompose K K' e e1 (lr_head_step_redex_shape _ _ _ _ _ Hh)
                   (lr_head_step_not_val _ _ _ _ _ Hh) Hv (eq_sym He)) as (K'' & -> & ->).
@@ -243,11 +237,11 @@ Proof.
       destruct (fill_decompose K K' e e1 (lr_head_external_redex_shape _ _ _ Hh)
                   (lr_head_external_not_val _ _ _ Hh) Hv (eq_sym He)) as (K'' & -> & ->).
       exists StuckState. split; [ done | ]. eapply AtCasStuck; [ by constructor | done.. ].
-    + simpl in Hv. inversion Hspawn as [K' e1 He]; subst.
-      assert (Hr : redex_shape (Fork cn)) by (intros Ki e' Heq; destruct Ki; discriminate).
-      destruct (fill_decompose K K' e (Fork cn) Hr eq_refl Hv (eq_sym He)) as (K'' & -> & ->).
-      exists (Running (fill K'' (Lit LitPoison)) []). rewrite /= fill_app. split; [ done | ].
-      by constructor.
+    + simpl in Hv. inversion Hspawn as [K' e1 op k1 Hh He]; subst.
+      destruct (fill_decompose K K' e e1 (lr_head_external_redex_shape _ _ _ Hh)
+                  (lr_head_external_not_val _ _ _ Hh) Hv (eq_sym He)) as (K'' & -> & ->).
+      exists (Running (fill K'' (k1 None)) []). rewrite /= fill_app. split; [ done | ].
+      eapply (AtSpawn _ _ (fun ov => fill K'' (k1 ov))). by constructor.
 Qed.
 
 
@@ -276,16 +270,6 @@ Proof.
   exact (lr_head_step_external _ _ _ _ _ _ _ Hh Hh').
 Qed.
 
-Lemma lr_step_spawn_disjoint e m T e' m' c' c_new :
-  lr_step e m T e' m' -> lr_spawn e c' c_new -> False.
-Proof.
-  intros [K1 e1 ?? e2 ? Hh] Hspawn. inversion Hspawn as [K2 e3 Heq]; subst.
-  assert (Hr : redex_shape (Fork c_new)) by (intros Ki e0 Hk; destruct Ki; discriminate).
-  destruct (fill_redex_unique K2 K1 (Fork c_new) e1 Hr (lr_head_step_redex_shape _ _ _ _ _ Hh)
-              eq_refl (lr_head_step_not_val _ _ _ _ _ Hh) Heq) as [_ <-].
-  inversion Hh.
-Qed.
-
 Lemma at_pure_step_sq (e1 e2 : sq_expr) :
   pure_step e1 e2 -> pure_step (Running e1 [] : lr_tstate) (Running e2 []).
 Proof.
@@ -296,8 +280,8 @@ Proof.
     destruct (Hsafe m) as (e' & m' & efs' & [Hs0 _]%sq_prim_step_lr_step).
     inversion Hs as [c ?? T c' m'' mu' Hstep Hrsv | c T ?? mu' Hne Hfin
       | c ly l v k ?? Hext | c ly l v ? k ?? Hext | c ly l ve vn vc ? k ?? Hext
-      | c ly l ve vn vc k ?? Hext | c ly l ve vn vc k ?? Hext | c c' cn ?? Hspawn ]; subst;
-      try done; try (exfalso; by eauto using lr_step_external_disjoint, lr_step_spawn_disjoint).
+      | c ly l ve vn vc k ?? Hext | c ly l ve vn vc k ?? Hext | c cn k ?? Hspawn ]; subst;
+      try done; try (exfalso; by eauto using lr_step_external_disjoint).
     destruct (Hdet m T c' m'' []) as (-> & -> & -> & _); [ by apply sq_prim_step_lr_step | ].
     simpl in Hrsv. injection Hrsv as <-. done.
 Qed.
@@ -747,8 +731,6 @@ Ltac inv_at_step :=
       try (is_var e; fail 1); apply lr_step_head in H; [ | solve_redex_shape ]
   | H : lr_external ?e _ _ |- _ =>
       try (is_var e; fail 1); apply lr_external_head in H; [ | solve_redex_shape ]
-  | H : lr_spawn ?e _ _ |- _ =>
-      try (is_var e; fail 1); apply lr_spawn_head in H as [? ?]; [ simplify_eq | solve_redex_shape ]
   | H : lr_head_step ?e _ _ _ _ |- _ =>
       try (is_var e; fail 1); inversion H; clear H; subst
   | H : lr_head_external ?e _ _ |- _ =>
@@ -926,8 +908,8 @@ Proof.
   iIntros (t2 σ2 efs Hat) "Hc".
   inversion Hat as [c ?? T c' m'' mu' Hs' Hrsv | c T ?? mu' Hne Hfin
       | c ly l v k ?? Hext | c ly l v ? k ?? Hext | c ly l ve vn vc ? k ?? Hext
-      | c ly l ve vn vc k ?? Hext | c ly l ve vn vc k ?? Hext | c c' cn ?? Hspawn ]; subst;
-    try done; try (exfalso; by eauto using lr_step_external_disjoint, lr_step_spawn_disjoint).
+      | c ly l ve vn vc k ?? Hext | c ly l ve vn vc k ?? Hext | c cn k ?? Hspawn ]; subst;
+    try done; try (exfalso; by eauto using lr_step_external_disjoint).
   destruct (Hval _ _ _ _ Hs') as (-> & -> & [v Hv']). apply of_to_val in Hv' as <-.
   simpl in Hrsv. injection Hrsv as <-.
   iMod ("Hstep" with "[%] Hc") as "Hstep"; [ done | ].
@@ -941,7 +923,7 @@ Lemma at_wp_fork E e :
 Proof.
   iIntros (Φ) "He HΦ". iApply wp_lift_atomic_step; [ done | ].
   iIntros ([m mu] ns κ κs nt) "Hsi". iModIntro. iSplit.
-  { iPureIntro. do 4 eexists. by apply AtSpawn, (LRSpawn []). }
+  { iPureIntro. do 4 eexists. by apply AtSpawn, (LREctxExternal []), LRSpawnE. }
   iNext. iIntros (t2 σ2 efs Hstep) "_".
   destruct (at_step_fork_inv _ _ _ _ _ _ _ Hstep) as (-> & -> & -> & ->).
   iModIntro. iFrame "Hsi". iSplitL "HΦ"; [ by iApply "HΦ" | ]. by iFrame.

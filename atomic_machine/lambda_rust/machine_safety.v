@@ -791,7 +791,7 @@ Proof.
     + eapply lr_frees_ok_nofree; [ exact Hfrees | intros ? [] % elem_of_nil | done ].
   - (* SC_Write *)
     apply lr_safety_mach_thread_idle in Hthread as (<- & Hna2c).
-    inversion Hext as [K0 e0 op k Hhe]; subst. inversion Hhe as [ | l' e1 v1 Hv1 | ]; subst.
+    inversion Hext as [K0 e0 op k Hhe]; subst. inversion Hhe as [ | l' e1 v1 Hv1 | | ]; subst.
     simpl in Hstore, Hmu. apply Forall_inv in Hmu.
     destruct (m !! l) as [v' | ] eqn:Hm; simplify_eq.
     destruct (lr_safety_mach_heaps_lookup_m _ _ _ _ _ Hheaps Hm) as ([ | n' ] & v0 & Hs & Hmu' & _ & _);
@@ -846,7 +846,7 @@ Proof.
     + eapply lr_frees_ok_nofree; [ exact Hfrees | intros ? [] % elem_of_nil | done ].
   - (* SC_Cas_Stuck: under reference safety this cannot happen. *)
     exfalso. apply lr_safety_mach_thread_idle in Hthread as (<- & Hna2c).
-    inversion Hext as [K0 e0 op k Hhe]; subst. inversion Hhe as [ | | l' e1 lit1' e2 lit2' He1 He2 ]; subst.
+    inversion Hext as [K0 e0 op k Hhe]; subst. inversion Hhe as [ | | l' e1 lit1' e2 lit2' He1 He2 | ]; subst.
     simpl in Hload. change (lr_val_eq m' v_cur (LitV lit1')) in Heq.
     destruct v_cur as [litl | ]; [ | contradiction ]. simpl in Heq.
     destruct (lr_safety_mach_heaps_lookup_m _ _ _ _ _ Hheaps Hload) as ([ | [ | n' ] ] & v0 & Hs & Hmu' & Hv & _).
@@ -866,12 +866,12 @@ Proof.
       by eapply lookup_lt_Some.
   - (* Spawn: the reference forks, appending at the machine's new index. *)
     apply lr_safety_mach_thread_idle in Hthread as (<- & Hna2c).
-    inversion Hspawn as [K e0 Hc0 Hc1 Hc2]; subst.
-    assert (Hna2 : na2_free (Fork c_new) = true) by eauto using na2_free_fill_inv. simpl in Hna2.
+    inversion Hspawn as [K0 e0 op k Hhead]; subst. inversion Hhead; subst.
+    assert (Hna2 : na2_free (Fork e_new) = true) by eauto using na2_free_fill_inv. simpl in Hna2.
     pose proof (lr_pools_match_least_free _ _ _ _ Hpools Hfree Hleast) as ->.
     eapply lr_safety_mach_pack.
     + apply rtc_once. eapply lr_reference_step_at_spawn; [ exact He | ]. apply Ectx_step', ForkS.
-    + rewrite <- (length_insert threads i (fill K (Lit LitPoison))).
+    + rewrite <- (length_insert threads i (fill K0 (Lit LitPoison))).
       apply lr_pools_match_snoc; [ | by constructor ].
       eapply lr_safety_mach_pools_update; [ exact Hpools | apply lr_frame_refl | done | ].
       constructor. by eapply na2_free_fill.

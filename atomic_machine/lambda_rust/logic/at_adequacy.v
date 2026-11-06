@@ -84,7 +84,8 @@ Lemma at_step_prim_step (tp : tpool) m mu tp' m' mu' :
         (forall k : nat, (k < j)%nat -> is_Some (tp !! k)) /\
         tp' = <[j := t_new]> (<[i := t']> tp))).
 Proof.
-  inversion 1; subst.
+  inversion 1; subst;
+    cbn [sqlang_at_external lr_language] in *.
   - eexists i, _, _, []. split; [ done | ]. split; [ by eapply AtTry | by left ].
   - eexists i, _, _, []. split; [ done | ]. split; [ by eapply AtCommit | by left ].
   - eexists i, _, _, []. split; [ done | ]. split; [ by eapply AtRead | by left ].
@@ -92,7 +93,8 @@ Proof.
   - eexists i, _, _, []. split; [ done | ]. split; [ by eapply AtCasSuc | by left ].
   - eexists i, _, _, []. split; [ done | ]. split; [ by eapply AtCasFail | by left ].
   - eexists i, _, _, []. split; [ done | ]. split; [ by eapply AtCasStuck | by left ].
-  - eexists i, _, _, [_]. split; [ done | ]. split; [ by eapply AtSpawn | ].
+  - eexists i, _, _, [_]. split; [ done | ]. split.
+    { by eapply AtSpawn. }
     right. eexists _, j. eauto.
 Qed.
 
@@ -140,12 +142,20 @@ Proof.
   inversion 1; subst; eexists.
   - by eapply Core_Try; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ].
   - by eapply Core_Commit; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ].
-  - by eapply SC_Read; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ].
-  - by eapply SC_Write; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ].
-  - by eapply SC_Cas_Suc; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ].
-  - by eapply SC_Cas_Fail; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ].
-  - by eapply SC_Cas_Stuck; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ].
-  - eapply (Spawn _ _ _ 0 _ _ _ 1); [ apply (lookup_singleton_eq (M := gmap nat)) | done | by rewrite (lookup_singleton_ne (M := gmap nat)) | ].
+  - eapply SC_Read; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ];
+      cbn [sqlang_at_external lr_language]; done.
+  - eapply SC_Write; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ];
+      cbn [sqlang_at_external lr_language]; done.
+  - eapply SC_Cas_Suc; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ];
+      cbn [sqlang_at_external lr_language]; done.
+  - eapply SC_Cas_Fail; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ];
+      cbn [sqlang_at_external lr_language]; done.
+  - eapply SC_Cas_Stuck; [ apply (lookup_singleton_eq (M := gmap nat)) | .. ];
+      cbn [sqlang_at_external lr_language]; done.
+  - eapply (Spawn _ _ _ 0 _ e_new K 1);
+      [ apply (lookup_singleton_eq (M := gmap nat))
+      | done
+      | by rewrite (lookup_singleton_ne (M := gmap nat)) | ].
     intros k Hk. assert (k = 0%nat) as -> by lia. by rewrite (lookup_singleton_eq (M := gmap nat)).
 Qed.
 

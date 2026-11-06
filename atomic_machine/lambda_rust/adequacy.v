@@ -84,7 +84,8 @@ Proof.
     unfold lr_stable_heaps_match in Hstable. rewrite Hload in Hstable.
     tauto.
   - (* Spawn *)
-    inversion Hspawn; subst. do 4 eexists. apply Ectx_step', ForkS.
+    inversion Hspawn as [K0 e0 op k Hhead]; subst. inversion Hhead; subst.
+    do 4 eexists. apply Ectx_step', ForkS.
 Qed.
 
 Lemma lr_stable_not_stuck e t sigma m mu :
@@ -141,10 +142,6 @@ Proof.
   by inversion H.
 Qed.
 
-Lemma lr_spawn_not_val e e' e_new :
-  lr_spawn e e' e_new -> to_val e = None.
-Proof. intros Hspawn. inversion Hspawn; subst. by apply fill_not_val. Qed.
-
 Lemma lr_value_not_reducible v m mu :
   ~ am_reducible (Running (of_val v) []) m mu.
 Proof.
@@ -154,7 +151,7 @@ Proof.
     inversion Hget; subst; try contradiction.
   all: try (apply lr_step_not_val in Hstep0; by rewrite to_of_val in Hstep0).
   all: try (apply lr_external_not_val in Hext; by rewrite to_of_val in Hext).
-  all: apply lr_spawn_not_val in Hspawn; by rewrite to_of_val in Hspawn.
+  all: apply lr_external_not_val in Hspawn; by rewrite to_of_val in Hspawn.
 Qed.
 
 Lemma lr_stuck_term_not_safe (sigma : state) :
