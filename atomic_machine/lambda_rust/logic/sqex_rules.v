@@ -35,49 +35,49 @@ Section semantics.
   Context `{!ExtCallSems lr_language}.
 
   (** Return from a request uses the continuation exposed by [lr_external]. *)
-  Lemma ext_step_call_inv e m e' m' efs :
-    ext_step (L := lr_language) e m e' m' efs ->
+  Lemma ext_step_call_inv e m T e' m' efs :
+    ext_step (L := lr_language) e m T e' m' efs ->
     exists op k ov, lr_external e op k /\
-      extcall_sems op m ov m' efs /\ e' = k ov.
+      extcall_sems op m ov m' efs /\ extcall_events op ov T /\ e' = k ov.
   Proof.
-    intros Hstep. destruct Hstep as [e op k m ov m' e' efs He Hsem Ha].
+    intros Hstep. destruct Hstep as [e op k m ov m' e' efs T He Hsem Htrace Ha].
     destruct Ha as [e op' k' ov He'].
     destruct (lr_external_det _ _ _ _ _ He' He) as [-> _].
     exists op', k', ov. auto.
   Qed.
 
-  Lemma ext_step_inv e op k m e' m' efs :
-    lr_external e op k -> ext_step (L := lr_language) e m e' m' efs ->
-    exists ov, extcall_sems op m ov m' efs /\ e' = k ov.
+  Lemma ext_step_inv e op k m T e' m' efs :
+    lr_external e op k -> ext_step (L := lr_language) e m T e' m' efs ->
+    exists ov, extcall_sems op m ov m' efs /\ extcall_events op ov T /\ e' = k ov.
   Proof.
     intros He Hstep.
-    destruct (ext_step_call_inv _ _ _ _ _ Hstep) as (op' & k' & ov & He' & Hsem & ->).
+    destruct (ext_step_call_inv _ _ _ _ _ _ Hstep) as (op' & k' & ov & He' & Hsem & Htrace & ->).
     destruct (lr_external_det _ _ _ _ _ He He') as [-> Hk].
-    exists ov. split; [done | apply Hk].
+    exists ov. split; first done. split; [done | apply Hk].
   Qed.
 
-  Lemma ext_step_fill K e m e' m' efs :
-    ext_step (L := lr_language) e m e' m' efs ->
-    ext_step (L := lr_language) (fill K e) m (fill K e') m' efs.
+  Lemma ext_step_fill K e m T e' m' efs :
+    ext_step (L := lr_language) e m T e' m' efs ->
+    ext_step (L := lr_language) (fill K e) m T (fill K e') m' efs.
   Proof.
     intros Hstep.
-    destruct (ext_step_call_inv _ _ _ _ _ Hstep) as (op & k & ov & He & Hsem & ->).
+    destruct (ext_step_call_inv _ _ _ _ _ _ Hstep) as (op & k & ov & He & Hsem & Htrace & ->).
     destruct (lr_external_fill K _ _ _ He) as (k' & He' & Hk).
-    eapply ExtStep; [exact He' | exact Hsem | ].
+    eapply ExtStep; [exact He' | exact Hsem | exact Htrace | ].
     rewrite -(Hk ov). by econstructor.
   Qed.
 
-  Lemma ext_step_fill_inv K e m e' m' efs :
-    to_val e = None -> ext_step (L := lr_language) (fill K e) m e' m' efs ->
-    exists e2, e' = fill K e2 /\ ext_step (L := lr_language) e m e2 m' efs.
+  Lemma ext_step_fill_inv K e m T e' m' efs :
+    to_val e = None -> ext_step (L := lr_language) (fill K e) m T e' m' efs ->
+    exists e2, e' = fill K e2 /\ ext_step (L := lr_language) e m T e2 m' efs.
   Proof.
     intros Hv Hstep.
-    destruct (ext_step_call_inv _ _ _ _ _ Hstep) as (op & k & ov & He & Hsem & ->).
+    destruct (ext_step_call_inv _ _ _ _ _ _ Hstep) as (op & k & ov & He & Hsem & Htrace & ->).
     inversion He as [K' r op' k' Hh Heq]; subst.
     destruct (fill_decompose K K' e r (lr_head_external_redex_shape _ _ _ Hh)
       (lr_head_external_not_val _ _ _ Hh) Hv (eq_sym Heq)) as (K'' & -> & ->).
     exists (fill K'' (k' ov)). rewrite fill_app. split; [done | ].
-    eapply ExtStep; [by constructor | exact Hsem | ].
+    eapply ExtStep; [by constructor | exact Hsem | exact Htrace | ].
     apply (LRAfterExternal _ op (fun ov => fill K'' (k' ov))). by constructor.
   Qed.
 End semantics.
@@ -102,7 +102,7 @@ Section rules.
     { apply of_to_val in Hv. subst e. iApply bupd_exwp. }
     rewrite exwp_unfold /exwp_pre (fill_not_val _ _ Hv).
     iIntros ">[Hseq | [%Hext Hext]] !>".
-    - iLeft. iIntros (m) "Hm". iMod ("Hseq" with "Hm") as "[%Hr Hstep]".
+    - iLeft. iIntros (m ver_map) "Hm". iMod ("Hseq" with "Hm") as "[%Hr Hstep]".
       iModIntro. iSplit.
       { iPureIntro. destruct Hr as (T & e2 & m2 & Hs).
         exists T, (fill K e2), m2. destruct Hs. rewrite -!fill_app. by constructor. }
@@ -116,12 +116,13 @@ Section rules.
     - iRight. iSplit.
       { iPureIntro. destruct Hext as (op & k & Hext).
         destruct (lr_external_fill K _ _ _ Hext) as (k' & H & _). eauto. }
-      iIntros (m) "Hm". iMod ("Hext" with "Hm") as "[%Hr Hstep]".
+      iIntros (m ver_map) "Hm". iMod ("Hext" with "Hm") as "[%Hr Hstep]".
       iModIntro. iSplit.
-      { iPureIntro. destruct Hr as (e2 & m2 & efs & Hs). eauto using ext_step_fill. }
-      iIntros (e2 m2 efs Hs).
-      destruct (ext_step_fill_inv _ _ _ _ _ _ Hv Hs) as (e' & -> & Hs').
-      iMod ("Hstep" $! e' m2 efs with "[%]") as "Hstep"; first done.
+      { iPureIntro. destruct Hr as (T & e2 & m2 & efs & Hs).
+        exists T, (fill K e2), m2, efs. by apply ext_step_fill. }
+      iIntros (T e2 m2 efs Hs).
+      destruct (ext_step_fill_inv _ _ _ _ _ _ _ Hv Hs) as (e' & -> & Hs').
+      iMod ("Hstep" $! T e' m2 efs with "[%]") as "Hstep"; first done.
       iModIntro. iNext. iMod "Hstep" as "Hstep". iModIntro.
       iMod "Hstep" as "[$ [Hwp $]]". iModIntro. by iApply "IH".
   Qed.
@@ -129,23 +130,23 @@ Section rules.
   Lemma exwp_ext_unfold E e op k Φ :
     lr_external e op k ->
     EXWP e @ E {{ Φ }} ⊣⊢
-      (∀ m1, sq_heap m1 ={E,∅}=∗
-        ⌜exists e2 m2 efs, ext_step (L := lr_language) e m1 e2 m2 efs⌝ ∗
-        ∀ e2 m2 efs, ⌜ext_step (L := lr_language) e m1 e2 m2 efs⌝ -∗
-          |={∅}▷=> |={∅,E}=> sq_heap m2 ∗ EXWP e2 @ E {{ Φ }} ∗
+      (∀ m1 ver_map, sq_heap_gen m1 ver_map ={E,∅}=∗
+        ⌜exists T e2 m2 efs, ext_step (L := lr_language) e m1 T e2 m2 efs⌝ ∗
+        ∀ T e2 m2 efs, ⌜ext_step (L := lr_language) e m1 T e2 m2 efs⌝ -∗
+          |={∅}▷=> |={∅,E}=> sq_heap_gen m2 (sq_versions_after T ver_map) ∗ EXWP e2 @ E {{ Φ }} ∗
             [∗ list] ef ∈ efs, EXWP ef {{ _, True }}).
   Proof.
     intros He. iSplit; last by iApply (exwp_lift_ext_step _ _ _ _ _ He).
     rewrite exwp_unfold /exwp_pre (lr_external_not_val _ _ _ He).
-    iIntros "H" (m) "Hm". iMod "H" as "[Hseq | [_ Hext]]".
+    iIntros "H" (m ver_map) "Hm". iMod "H" as "[Hseq | [_ Hext]]".
     - iMod ("Hseq" with "Hm") as "[%Hr _]".
       destruct Hr as (T & e2 & m2 & Hs). exfalso.
       exact (lr_step_external_disjoint _ _ _ _ _ _ _ Hs He).
     - by iApply "Hext".
   Qed.
 
-  Lemma exwp_stuck E Φ m :
-    sq_heap m -∗ EXWP stuck_term @ E {{ Φ }} ==∗ False.
+  Lemma exwp_stuck E Φ m ver_map :
+    sq_heap_gen m ver_map -∗ EXWP stuck_term @ E {{ Φ }} ==∗ False.
   Proof.
     assert (Hr : redex_shape stuck_term).
     { unfold stuck_term. intros Ki e He; destruct Ki; simpl in He;
@@ -160,21 +161,21 @@ Section rules.
       A failed external return may be [stuck_term], which EXWP excludes. *)
   Lemma exwp_atomic_ext E1 E2 e op k Φ :
     lr_external e op k ->
-    (forall m e2 m2 efs, ext_step (L := lr_language) e m e2 m2 efs ->
+    (forall m T e2 m2 efs, ext_step (L := lr_language) e m T e2 m2 efs ->
       is_Some (to_val e2) \/ e2 = stuck_term) ->
     (|={E1,E2}=> EXWP e @ E2 {{ v, |={E2,E1}=> Φ v }}) ⊢
       EXWP e @ E1 {{ Φ }}.
   Proof.
     intros He Ha. iIntros "Hwp".
     iApply (exwp_lift_ext_step _ _ _ _ _ He).
-    iIntros (m) "Hm". iMod "Hwp" as "Hwp".
+    iIntros (m ver_map) "Hm". iMod "Hwp" as "Hwp".
     rewrite (exwp_ext_unfold _ _ _ _ _ He).
     iMod ("Hwp" with "Hm") as "[$ Hstep]". iModIntro.
-    iIntros (e2 m2 efs Hs).
-    iMod ("Hstep" $! e2 m2 efs with "[%]") as "Hstep"; first done.
+    iIntros (T e2 m2 efs Hs).
+    iMod ("Hstep" $! T e2 m2 efs with "[%]") as "Hstep"; first done.
     iModIntro. iNext. iMod "Hstep" as "Hstep". iModIntro.
     iMod "Hstep" as "[Hm [Hwp Hforks]]".
-    destruct (Ha _ _ _ _ Hs) as [[v Hv] | ->].
+    destruct (Ha _ _ _ _ _ Hs) as [[v Hv] | ->].
     - apply of_to_val in Hv as <-. rewrite exwp_value_bupd.
       iMod "Hwp" as ">Hpost". iModIntro. iFrame. by iApply exwp_value.
     - iMod (exwp_stuck with "Hm Hwp") as %[].
@@ -188,7 +189,7 @@ Section rules.
     assert (Hv : to_val e1 = None).
     { destruct (Hsafe ∅) as (e' & m' & efs & Hs). exact (language.val_stuck _ _ _ _ _ _ Hs). }
     iIntros "Hwp". iApply exwp_lift_step; first done.
-    iIntros (m) "Hm". iModIntro. iSplit.
+    iIntros (m ver_map) "Hm". iModIntro. iSplit.
     { iPureIntro. destruct (Hsafe m) as (e' & m' & efs & [Hs _]%sq_prim_step_lr_step).
       eauto. }
     iIntros (T e' m' Hs).
@@ -206,17 +207,50 @@ Section rules.
     iNext. by iApply IH.
   Qed.
 
+  Lemma exwp_read_na E l q v :
+    l ↦{q} v -∗ EXWP (Read Na1Ord (Lit (LitLoc l))) @ E
+      {{ w, ⌜w = v⌝ ∗ l ↦{q} v }}.
+  Proof.
+    iIntros "Hl". iApply exwp_lift_step; first done.
+    iIntros (m ver_map) "Hm".
+    iDestruct (sq_heap_gen_read with "Hm Hl") as %Hl.
+    iModIntro. iSplit.
+    { iPureIntro. do 3 eexists. apply (LREctxStep []). by apply LRReadNaS. }
+    iIntros (T e2 m2 Hs). apply lr_step_head in Hs; last solve_redex_shape.
+    inversion Hs; subst. simplify_map_eq. iNext.
+    iModIntro. iFrame "Hm". iApply exwp_value. by iFrame.
+  Qed.
+
+  (** This rule increments the hidden write version, including when v = v'. *)
+  Lemma exwp_write_na E l v v' :
+    l ↦ v -∗ EXWP (Write Na1Ord (Lit (LitLoc l)) (of_val v')) @ E
+      {{ _, l ↦ v' }}.
+  Proof.
+    iIntros "Hl". iApply exwp_lift_step; first done.
+    iIntros (m ver_map) "Hm".
+    iDestruct (sq_heap_gen_read with "Hm Hl") as %Hl.
+    iModIntro. iSplit.
+    { iPureIntro. do 3 eexists. apply (LREctxStep []).
+      econstructor; [apply to_of_val | exact Hl]. }
+    iIntros (T e2 m2 Hs). apply lr_step_head in Hs; last solve_redex_shape.
+    inversion Hs; subst.
+    match goal with H : to_val (of_val _) = Some _ |- _ =>
+      rewrite to_of_val in H; injection H as <- end.
+    iNext. iMod (sq_heap_gen_write_step with "Hm Hl") as "[Hm Hl]".
+    iModIntro. iFrame "Hm". by iApply (exwp_value _ (LitV LitPoison)).
+  Qed.
+
   Lemma exwp_alloc E Φ :
     (▷ ∀ l, l ↦ LitV LitPoison -∗ Φ (LitV (LitLoc l))) -∗
     EXWP (Alloc (Lit (LitInt 1))) @ E {{ Φ }}.
   Proof.
     iIntros "HΦ". iApply exwp_lift_step; first done.
-    iIntros (m) "Hm". iModIntro. iSplit.
+    iIntros (m ver_map) "Hm". iModIntro. iSplit.
     { iPureIntro. destruct (sq_alloc_fresh m) as [l Hl].
       do 3 eexists. apply (LREctxStep []). apply LRAllocS; [lia | done]. }
     iIntros (T e2 m2 Hs). apply lr_step_head in Hs; last solve_redex_shape.
     inversion Hs; subst. iNext.
-    iMod (sq_heap_alloc _ _ 1 with "Hm") as "[Hm [_ Hl]]"; [lia | done | ].
+    iMod (sq_heap_gen_alloc _ _ _ 1 with "Hm") as "[Hm [_ Hl]]"; [lia | done | ].
     rewrite sq_pointsto_vec_cons. iDestruct "Hl" as "[Hl _]".
     iModIntro. iFrame. iApply (exwp_value _ (LitV (LitLoc l))). by iApply "HΦ".
   Qed.
@@ -233,7 +267,7 @@ Section sc_rules.
     assert (He : lr_external (Read ScOrd (Lit (LitLoc l))) (ALoad tt l) lr_result_expr).
     { apply (LREctxExternal []). constructor. }
     apply (exwp_atomic_ext _ _ _ _ _ _ He).
-    intros m e2 m2 efs Hs. destruct (ext_step_inv _ _ _ _ _ _ _ He Hs) as (ov & _ & ->).
+    intros m T e2 m2 efs Hs. destruct (ext_step_inv _ _ _ _ _ _ _ _ He Hs) as (ov & _ & _ & ->).
     destruct ov; simpl; [left; rewrite to_of_val; eauto | by right].
   Qed.
 
@@ -246,7 +280,7 @@ Section sc_rules.
       (AStore tt l v) (fun _ => Lit LitPoison)).
     { apply (LREctxExternal []). constructor. apply to_of_val. }
     apply (exwp_atomic_ext _ _ _ _ _ _ He).
-    intros m e2 m2 efs Hs. destruct (ext_step_inv _ _ _ _ _ _ _ He Hs) as (ov & _ & ->).
+    intros m T e2 m2 efs Hs. destruct (ext_step_inv _ _ _ _ _ _ _ _ He Hs) as (ov & _ & _ & ->).
     left. eauto.
   Qed.
 End sc_rules.

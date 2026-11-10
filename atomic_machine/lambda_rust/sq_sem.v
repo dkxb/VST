@@ -131,6 +131,95 @@ Inductive lr_step
       (fill K e1) m1 T
       (fill K e2) m2.
 
+(** The memory effect of a sequential step, independently of its expression.
+    This is an invariant proved below, not an additional step premise. *)
+Inductive lr_mem_effect : lr_mem -> list lr_mem_ev -> lr_mem -> Prop :=
+| LREffectPure m : lr_mem_effect m [] m
+| LREffectRead m l :
+    is_Some (m !! l) -> lr_mem_effect m [lr_read_event l] m
+| LREffectWrite m l v :
+    is_Some (m !! l) -> lr_mem_effect m [lr_write_event l] (<[l := v]> m)
+| LREffectAlloc m l n :
+    (forall z, m !! (l +ₗ z) = None) ->
+    lr_mem_effect m (lr_alloc_events l n) (alloc_gmap (LitV LitPoison) l n m)
+| LREffectFree m l n :
+    (forall z, 0 <= z < Z.of_nat n -> is_Some (m !! (l +ₗ z))) ->
+    lr_mem_effect m (lr_free_events l n) (free_gmap l n m).
+
+Lemma lr_step_mem_effect e m T e' m' :
+  lr_step e m T e' m' -> lr_mem_effect m T m'.
+Proof.
+  intros [K e1 m1 T1 e2 m2 Hhead]. destruct Hhead.
+  - constructor.
+  - constructor.
+  - constructor. by eexists.
+  - constructor. by eexists.
+  - by constructor.
+  - constructor. intros z Hz. apply H0. rewrite Z2Nat.id in Hz; lia.
+  - constructor.
+Qed.
+
+(** An emitted access identifies the exact memory effect. These are purely
+    operational facts; logical ownership is supplied separately by EXWP. *)
+Lemma lr_step_write_footprint e m T e' m' l :
+  lr_step e m T e' m' -> lr_write_event l ∈ T ->
+  exists old new, m !! l = Some old /\
+    T = [lr_write_event l] /\ m' = <[l := new]> m.
+Proof.
+  intros Hstep Hwrite.
+  destruct (lr_step_mem_effect _ _ _ _ _ Hstep).
+  - inversion Hwrite.
+  - apply list_elem_of_singleton in Hwrite. discriminate.
+  - apply list_elem_of_singleton in Hwrite. injection Hwrite as ->.
+    destruct H as [old Hold]. exists old, v. done.
+  - apply list_elem_of_fmap in Hwrite as (k & Hk & _). discriminate.
+  - apply list_elem_of_fmap in Hwrite as (k & Hk & _). discriminate.
+Qed.
+
+Lemma lr_step_read_footprint e m T e' m' l :
+  lr_step e m T e' m' -> lr_read_event l ∈ T ->
+  is_Some (m !! l) /\ T = [lr_read_event l] /\ m' = m.
+Proof.
+  intros Hstep Hread.
+  destruct (lr_step_mem_effect _ _ _ _ _ Hstep).
+  - inversion Hread.
+  - apply list_elem_of_singleton in Hread. injection Hread as ->. done.
+  - apply list_elem_of_singleton in Hread. discriminate.
+  - apply list_elem_of_fmap in Hread as (k & Hk & _). discriminate.
+  - apply list_elem_of_fmap in Hread as (k & Hk & _). discriminate.
+Qed.
+
+Local Lemma lr_alloc_gmap_frame (m : lr_mem) l n k :
+  k ∉ lr_locs l n -> alloc_gmap (LitV LitPoison) l n m !! k = m !! k.
+Proof.
+  revert l. induction n as [|n IH]=> l //= /not_elem_of_cons [Hne Htail].
+  rewrite lookup_insert_ne; last congruence. by apply IH.
+Qed.
+
+Local Lemma lr_free_gmap_frame (m : lr_mem) l n k :
+  k ∉ lr_locs l n -> free_gmap l n m !! k = m !! k.
+Proof.
+  revert l. induction n as [|n IH]=> l //= /not_elem_of_cons [Hne Htail].
+  rewrite lookup_delete_ne; last congruence. by apply IH.
+Qed.
+
+(** Outside Write/Alloc/Free events the memory is unchanged. This is a
+    modification footprint, not a claim that all step-enabling facts are read
+    events: pointer equality can inspect allocation status while emitting []. *)
+Lemma lr_step_frame e m T e' m' k :
+  lr_step e m T e' m' ->
+  lr_write_event k ∉ T -> lr_alloc_event k ∉ T -> lr_free_event k ∉ T ->
+  m' !! k = m !! k.
+Proof.
+  intros Hstep. destruct (lr_step_mem_effect _ _ _ _ _ Hstep);
+    intros Hwrite Halloc Hfree; try done.
+  - apply lookup_insert_ne. intros ->. apply Hwrite. by left.
+  - apply lr_alloc_gmap_frame. intros Hk. apply Halloc.
+    by apply list_elem_of_fmap_2.
+  - apply lr_free_gmap_frame. intros Hk. apply Hfree.
+    by apply list_elem_of_fmap_2.
+Qed.
+
 Local Notation lr_atomic_op := (@atomic_op loc val lr_layout expr).
 
 Definition lr_result_expr (ov : option val) : expr :=

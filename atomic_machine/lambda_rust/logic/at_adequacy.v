@@ -25,7 +25,8 @@ Local Notation lr_tstate := (tstate (L := lr_language)).
 
 Class lrAtGpreS Σ := LrAtGpreS {
   lrAtGpreS_inv :: invGpreS Σ;
-  lrAtGpreS_heap :: ghost_mapG Σ loc val;
+  lrAtGpreS_heap :: ghost_mapG Σ loc (val * nat);
+  lrAtGpreS_writes :: ghost_mapG Σ loc val;
   lrAtGpreS_heap_freeable :: inG Σ (authR sq_freeableUR);
   lrAtGpreS_reads :: ghost_mapG Σ nat (loc * Qp * val);
   lrAtGpreS_frees :: inG Σ (authR (gset_disjUR loc))
@@ -33,6 +34,7 @@ Class lrAtGpreS Σ := LrAtGpreS {
 
 Definition lrAtΣ : gFunctors :=
   #[invΣ;
+    ghost_mapΣ loc (val * nat);
     ghost_mapΣ loc val;
     GFunctor (constRF (authR sq_freeableUR));
     ghost_mapΣ nat (loc * Qp * val);
@@ -55,7 +57,7 @@ Theorem at_adequacy Σ `{!lrAtGpreS Σ} (e : expr) (m : lr_mem) (φ : at_val -> 
   adequate NotStuck (Running e [] : lr_tstate) ((m, at_init_mu m) : at_state) (fun v _ => φ v).
 Proof.
   intros Hwp; eapply (wp_adequacy _ _); iIntros (??).
-  iMod (ghost_map_alloc m) as (vγ) "[Hvγ _]".
+  iMod (ghost_map_alloc (sq_heap_cells m (fun _ => 0%nat))) as (vγ) "[Hvγ _]".
   iMod (own_alloc (● (∅ : sq_freeableUR))) as (fγ) "Hfγ";
     first by apply auth_auth_valid.
   iMod (ghost_map_alloc_empty (K := nat) (V := loc * Qp * val)) as (rγ) "Hrγ".
@@ -67,7 +69,7 @@ Proof.
   iModIntro. iExists (fun σ _ => at_si (lrAtGS0 := Hat) σ.1 σ.2), (fun _ => True%I).
   iSplitL.
   { iSplitL "Hvγ Hfγ".
-    { iExists ∅. iFrame. iPureIntro. intros ?? Hb. by rewrite lookup_empty in Hb. }
+    { iExists (fun _ => 0%nat), ∅. iFrame. iPureIntro. intros ?? Hb. by rewrite lookup_empty in Hb. }
     iExists ∅, ∅, ∅. iFrame. rewrite !big_sepM_empty. iPureIntro. split_and!; try done.
     apply at_resv_rel_init. }
   by iApply (Hwp Hat).

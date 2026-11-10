@@ -222,6 +222,31 @@ Proof.
       by destruct (IH K2 Hfill') as (-> & ->).
 Qed.
 
+Lemma lr_step_not_value e m T e' m' :
+  lr_step e m T e' m' -> to_val e = None.
+Proof. intros [K e1 m1 T1 e2 m2 Hhead]. apply fill_not_val. by destruct Hhead. Qed.
+
+(** Sequential reduction and an exposed external call are disjoint, using
+    only the operational semantics and uniqueness of the head redex. *)
+Lemma lr_step_not_external e m T e' m' :
+  lr_step e m T e' m' -> forall op k, ~ lr_external e op k.
+Proof.
+  intros [K1 e1 m1 T1 e2 m2 Hhead] op k Hext.
+  inversion Hext as [K2 e3 op' k' Hcall Heq].
+  assert (Hshape : redex_shape e1).
+  { intros Ki r ->. revert Hhead.
+    destruct Ki; inversion_clear 1; decompose_Forall_hyps;
+      simplify_option_eq; by eauto. }
+  assert (Hshape' : redex_shape e3).
+  { intros Ki r ->. destruct Ki; inversion Hcall; subst;
+      rewrite ?to_of_val; eauto. }
+  assert (Hv : to_val e1 = None) by (destruct Hhead; done).
+  assert (Hv' : to_val e3 = None) by (destruct Hcall; done).
+  destruct (fill_redex_unique K2 K1 e3 e1 Hshape' Hshape Hv' Hv Heq)
+    as [_ ->].
+  destruct Hhead; inversion Hcall.
+Qed.
+
 Lemma head_step_redex_shape e1 sigma1 e2 sigma2 spawned :
   base_step e1 sigma1 [] e2 sigma2 spawned -> redex_shape e1.
 Proof. intros Hstep Ki e' ->. by eapply base_ctx_step_val. Qed.
@@ -341,17 +366,34 @@ Qed.
     [setoid_rewrite] rather than [rewrite]: the lookups elaborate at
     [rw_map] and [gmap], which [rewrite] treats as distinct. *)
 
+Lemma lr_locs_member l n z :
+  (0 <= z < Z.of_nat n)%Z -> (l +ₗ z)%L ∈ lr_locs l n.
+Proof.
+  revert l z. induction n as [|n IH]=> l z Hz; first lia.
+  simpl. destruct (decide (z = 0%Z)) as [->|Hne].
+  - rewrite shift_loc_0. by left.
+  - right. replace (l +ₗ z)%L with ((l +ₗ 1) +ₗ (z - 1))%L.
+    + apply IH. lia.
+    + rewrite shift_loc_assoc. f_equal. lia.
+Qed.
+
+Lemma lr_rsv_alloc_events_range (mu : rw_map) l n :
+  (forall z, (0 <= z < Z.of_nat n)%Z -> mu !! (l +ₗ z)%L = None) ->
+  rsv (lr_alloc_events l n) mu = Some (alloc_gmap (Rst 0) l n mu).
+Proof.
+  revert l. induction n as [|n IH]=> l Hnone; first done.
+  unfold lr_alloc_events, rsv in *. simpl. rewrite IH.
+  2: { intros z Hz. rewrite shift_loc_assoc. apply Hnone. lia. }
+  simpl. unfold rsv_Alloc. setoid_rewrite sq_mem_lookup_init_mem. case_decide as Hin.
+  { destruct l. unfold loc_in_range, shift_loc in Hin. simpl in Hin. lia. }
+  pose proof (Hnone 0%Z ltac:(lia)) as H0. rewrite shift_loc_0 in H0.
+  by setoid_rewrite H0.
+Qed.
+
 Lemma lr_rsv_alloc_events (mu : rw_map) l n :
   (forall z, mu !! (l +ₗ z)%L = None) ->
   rsv (lr_alloc_events l n) mu = Some (alloc_gmap (Rst 0) l n mu).
-Proof.
-  revert l. induction n as [ | n IH ]; intros l Hnone; [ done | ].
-  unfold lr_alloc_events, rsv in *. simpl. rewrite IH.
-  2: { intros z. rewrite shift_loc_assoc. apply Hnone. }
-  simpl. unfold rsv_Alloc. setoid_rewrite sq_mem_lookup_init_mem. case_decide as Hin.
-  { destruct l. unfold loc_in_range, shift_loc in Hin. simpl in Hin. lia. }
-  pose proof (Hnone 0%Z) as H0. rewrite shift_loc_0 in H0. by setoid_rewrite H0.
-Qed.
+Proof. intros Hnone. apply lr_rsv_alloc_events_range. auto. Qed.
 
 Lemma lr_fin_alloc_events (mu : rw_map) l n :
   atomic_machine.fin (lr_alloc_events l n) mu = Some mu.
@@ -387,8 +429,8 @@ Proof. destruct n; [ lia | discriminate ]. Qed.
 
 (** Reserving and immediately finishing a single non-atomic access
     returns the reader/writer map to its starting point. *)
-Lemma lr_rsv_fin_read (mu : rw_map) l :
-  mu !! l = Some (Rst 0) ->
+Lemma lr_rsv_fin_readers (mu : rw_map) l n :
+  mu !! l = Some (Rst n) ->
   exists mu', rsv [lr_read_event l] mu = Some mu' /\ atomic_machine.fin [lr_read_event l] mu' = Some mu.
 Proof.
   intros Hl. unfold rw_map in *. eexists. split.
@@ -396,6 +438,11 @@ Proof.
   - unfold atomic_machine.fin. simpl. unfold fin_Read, rw_map. rewrite lookup_insert_eq. simpl.
     by erewrite insert_insert_eq, insert_id.
 Qed.
+
+Lemma lr_rsv_fin_read (mu : rw_map) l :
+  mu !! l = Some (Rst 0) ->
+  exists mu', rsv [lr_read_event l] mu = Some mu' /\ atomic_machine.fin [lr_read_event l] mu' = Some mu.
+Proof. apply lr_rsv_fin_readers. Qed.
 
 Lemma lr_rsv_fin_write (mu : rw_map) l :
   mu !! l = Some (Rst 0) ->
@@ -405,6 +452,41 @@ Proof.
   - unfold rsv. simpl. unfold rsv_Write. by setoid_rewrite Hl.
   - unfold atomic_machine.fin. simpl. unfold fin_Write, rw_map. rewrite lookup_insert_eq. simpl.
     by erewrite insert_insert_eq, insert_id.
+Qed.
+
+(** Event permissions are about the actual reader/writer map. The allocation
+    and free clauses are separate from the read/write ownership implications. *)
+Definition lr_events_permitted (mu : rw_map) (T : list (@mem_ev loc)) : Prop :=
+  forall l,
+    (lr_write_event l ∈ T -> mu !! l = Some (Rst 0)) /\
+    (lr_read_event l ∈ T -> exists n, mu !! l = Some (Rst n)) /\
+    (lr_alloc_event l ∈ T -> mu !! l = None) /\
+    (lr_free_event l ∈ T -> is_Some (mu !! l)).
+
+(** The footprint invariant discharges the operational Try/Commit bridge.
+    Logical adequacy only needs to establish [lr_events_permitted]; it does
+    not need a case analysis on the constructors of [lr_step]. *)
+Lemma lr_step_rsv_fin e m T e' m' mu :
+  lr_step e m T e' m' -> lr_events_permitted mu T ->
+  exists mu_try mu_done,
+    rsv T mu = Some mu_try /\ atomic_machine.fin T mu_try = Some mu_done.
+Proof.
+  intros Hstep Hperm. destruct (lr_step_mem_effect _ _ _ _ _ Hstep).
+  - exists mu, mu. by split.
+  - destruct (proj1 (proj2 (Hperm l)) ltac:(by left)) as [n Hl].
+    destruct (lr_rsv_fin_readers mu l n Hl) as [mu' [Hr Hf]].
+    by exists mu', mu.
+  - destruct (lr_rsv_fin_write mu l (proj1 (Hperm l) ltac:(by left)))
+      as [mu' [Hr Hf]]. by exists mu', mu.
+  - exists (alloc_gmap (Rst 0) l n mu), (alloc_gmap (Rst 0) l n mu).
+    split; last apply lr_fin_alloc_events.
+    apply lr_rsv_alloc_events_range. intros z Hz.
+    apply (proj1 (proj2 (proj2 (Hperm (l +ₗ z)%L)))).
+    apply list_elem_of_fmap_2. by apply lr_locs_member.
+  - exists mu, (free_gmap l n mu). split; first apply lr_rsv_free_events.
+    apply lr_fin_free_events. intros z Hz.
+    apply (proj2 (proj2 (proj2 (Hperm (l +ₗ z)%L)))).
+    apply list_elem_of_fmap_2. by apply lr_locs_member.
 Qed.
 
 (** * Correspondence of cfgs

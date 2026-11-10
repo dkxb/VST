@@ -534,8 +534,8 @@ Section state_interp.
       removes the entry from [R], and takes [l {q}↦ v] back.
       
       The [lrAtGS_reads_name] ghost state only appears between Try and Commit,
-      does not appear in the proof rule's logic level, and the model for the
-      points-to tracks only the value and its ownership fraction. *)
+      does not appear in the proof rule's logic level. The points-to keeps
+      its value, ownership fraction, and hidden write version. *)
       ghost_map_auth lrAtGS_reads_name 1 R ∗ ([∗ map] x ∈ R, x.1.1 ↦{x.1.2} x.2) ∗
       (* Similarly, a pending write adds the write location and value to [Wm]
       and keeps the points-to until commit. *)
@@ -563,7 +563,7 @@ Section resv.
 
   Lemma heap_pointsto_excl' l q v w : l ↦ v ∗ l ↦{q} w ⊢ ⌜False⌝.
   Proof.
-    iIntros "[H1 H2]".
+    iIntros "[(%n1 & H1) (%n2 & H2)]".
     iDestruct (ghost_map_elem_ne with "H1 H2") as %Hne. done.
   Qed.
 
