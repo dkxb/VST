@@ -1,4 +1,5 @@
 (** Compositional rules for EXWP. External calls and spawning admit fancy updates. *)
+From iris.algebra Require Import auth gmap.
 Require Import VST.atomic_machine.atomic_machine.
 Require Import VST.atomic_machine.lambda_rust.logic.at_logic.
 Require Import VST.atomic_machine.lambda_rust.adequacy.
@@ -219,6 +220,38 @@ Section rules.
     iIntros (T e2 m2 Hs). apply lr_step_head in Hs; last solve_redex_shape.
     inversion Hs; subst. simplify_map_eq. iNext.
     iModIntro. iFrame "Hm". iApply exwp_value. by iFrame.
+  Qed.
+
+  Local Lemma sqex_freeable_allocated m ver_map l :
+    sq_heap_gen m ver_map -∗ †l…1 -∗ ⌜is_Some (m !! l)⌝.
+  Proof.
+    iIntros "(%hF & Hm & HF & %Hrel) Hfree".
+    iCombine "HF Hfree" gives %[Hin Hvalid]%auth_both_valid_discrete.
+    move: Hin=> /singleton_included_l [[q qs] [/leibniz_equiv_iff Hlookup Hin]].
+    apply (Some_included_exclusive _ _) in Hin as [=<-<-]%leibniz_equiv; last first.
+    { move: (Hvalid (l.1)). rewrite Hlookup. by intros [??]. }
+    iPureIntro.
+    pose proof (sq_freeable_is_Some m hF l 1 0 Hrel Hlookup) as Hsome.
+    rewrite shift_loc_0 in Hsome. apply Hsome. lia.
+  Qed.
+
+  (** This exposes the missing read-permission check in the current EXWP.
+      Freeability and [sq_freeable_rel] establish allocation without any
+      points-to. That suffices for reducibility; a read preserves both memory
+      and versions, so the successor can reuse the state interpretation.
+      With postcondition [True], no knowledge of the returned value is needed.
+      This is a consequence of the definition, not the intended access rule. *)
+  Lemma exwp_read_na_from_freeable E l :
+    †l…1 -∗ EXWP (Read Na1Ord (Lit (LitLoc l))) @ E {{ _, True }}.
+  Proof.
+    iIntros "Hfree". iApply exwp_lift_step; first done.
+    iIntros (m ver_map) "Hm".
+    iDestruct (sqex_freeable_allocated with "Hm Hfree") as %[v Hv].
+    iModIntro. iSplit.
+    { iPureIntro. do 3 eexists. apply (LREctxStep []). by apply LRReadNaS. }
+    iIntros (T e2 m2 Hs). apply lr_step_head in Hs; last solve_redex_shape.
+    inversion Hs; subst. simplify_map_eq. iNext.
+    iModIntro. iFrame "Hm". rewrite exwp_value_bupd. by iModIntro.
   Qed.
 
   (** This rule increments the hidden write version, including when v = v'. *)
