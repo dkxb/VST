@@ -1,13 +1,9 @@
 (** Heap resources shared by the sequential and atomic-machine logics.
-    Each cell agrees on a value and a write version. A fraction q contributes
-    q times that version to the explicit counter assertion below. Contributions
-    add when fractions combine; their normalized versions must agree.
-    [sq_heap_gen] fixes the per-location versions supplied by EXWP. Each
-    step's events force the next versions, without retaining a history.
-    [sq_heap] hides the versions for the reservation-based atomic logic. *)
+    Values live in the physical memory; a separate permission map records
+    the thread's total ownership at each location. Points-to assertions
+    own fragments of that total, coupled with agreement on the value. *)
 
-From Stdlib Require Import Qcanon.
-From iris.algebra Require Import auth gmap frac excl.
+From iris.algebra Require Import auth gmap frac agree excl.
 From iris.bi Require Import fractional.
 From iris.base_logic.lib Require Export ghost_map.
 From iris.proofmode Require Export proofmode.
@@ -16,15 +12,78 @@ Require Export VST.atomic_machine.lambda_rust.sq_sem.
 
 Set Default Proof Using "Type".
 
+Definition sq_heapUR : ucmra := gmapUR loc (prodR fracR (agreeR (leibnizO val))).
 Definition sq_freeableUR : ucmra :=
   gmapUR block (prodR fracR (gmapR Z (exclR unitO))).
 
 Class sq_heapGS Σ := SqHeapGS {
-  sq_heap_inG :: ghost_mapG Σ loc (val * nat);
+  sq_heap_inG :: inG Σ (authR sq_heapUR);
   sq_freeable_inG :: inG Σ (authR sq_freeableUR);
   sq_heap_name : gname;
   sq_freeable_name : gname
 }.
+
+Definition perm_map := gmap loc Qp.
+Definition sq_heap_cells (m : lr_mem) (p : perm_map) : sq_heapUR :=
+  map_zip_with (fun q v => (q, to_agree v)) p m.
+Definition sq_full_heap (m : lr_mem) : perm_map := (fun _ => 1%Qp) <$> m.
+(** Every owned location must be allocated: [dom p ⊆ dom m]. *)
+Definition sq_heap_rel (m : lr_mem) (p : perm_map) : Prop :=
+  (dom p : gset loc) ⊆ dom m.
+
+Lemma sq_heap_cells_lookup m p l :
+  sq_heap_cells m p !! l =
+    (q ← p !! l; v ← m !! l; Some (q, to_agree v)).
+Proof. by rewrite /sq_heap_cells map_lookup_zip_with. Qed.
+
+Lemma sq_heap_cells_insert m p l v q :
+  sq_heap_cells (<[l := v]> m) (<[l := q]> p) =
+    <[l := (q, to_agree v)]> (sq_heap_cells m p).
+Proof. by rewrite /sq_heap_cells map_insert_zip_with. Qed.
+
+Lemma sq_heap_cells_write m p l v q :
+  p !! l = Some q ->
+  sq_heap_cells (<[l := v]> m) p =
+    <[l := (q, to_agree v)]> (sq_heap_cells m p).
+Proof.
+  intros Hl. rewrite -sq_heap_cells_insert. by rewrite (insert_id p l q).
+Qed.
+
+Lemma sq_heap_cells_delete m p l :
+  sq_heap_cells (delete l m) (delete l p) = delete l (sq_heap_cells m p).
+Proof. by rewrite /sq_heap_cells map_delete_zip_with. Qed.
+
+Lemma sq_heap_rel_insert m p l v q :
+  sq_heap_rel m p -> sq_heap_rel (<[l := v]> m) (<[l := q]> p).
+Proof.
+  unfold sq_heap_rel, lr_mem, perm_map. rewrite !dom_insert_L. set_solver.
+Qed.
+
+Lemma sq_heap_rel_delete m p l :
+  sq_heap_rel m p -> sq_heap_rel (delete l m) (delete l p).
+Proof.
+  unfold sq_heap_rel, lr_mem, perm_map. rewrite !dom_delete_L. set_solver.
+Qed.
+
+Lemma sq_heap_cells_valid m p :
+  (forall l q, p !! l = Some q -> (q ≤ 1)%Qp) -> ✓ sq_heap_cells m p.
+Proof.
+  intros Hq l. rewrite sq_heap_cells_lookup.
+  destruct (p !! l) as [q|] eqn:Hl; simpl; last done.
+  destruct (m !! l) as [v|]; simpl; last done.
+  split; [by eapply Hq | done].
+Qed.
+
+Lemma sq_full_heap_valid m : ✓ sq_heap_cells m (sq_full_heap m).
+Proof.
+  unfold lr_mem in *. apply sq_heap_cells_valid. intros l q.
+  rewrite /sq_full_heap lookup_fmap. destruct (m !! l); simpl; intros Heq; inversion Heq; subst; done.
+Qed.
+
+Lemma sq_full_heap_rel m : sq_heap_rel m (sq_full_heap m).
+Proof.
+  unfold sq_heap_rel, sq_full_heap, lr_mem, perm_map. by rewrite dom_fmap_L.
+Qed.
 
 Fixpoint sq_inter (i0 : Z) (n : nat) : gmapR Z (exclR unitO) :=
   match n with O => ∅ | S n => <[i0 := Excl ()]>(sq_inter (i0+1) n) end.
@@ -33,81 +92,53 @@ Definition sq_freeable_rel (m : lr_mem) (hF : sq_freeableUR) : Prop :=
   ∀ blk qs, hF !! blk = Some qs ->
     qs.2 ≠ ∅ ∧ ∀ i, is_Some (m !! (blk, i)) ↔ is_Some (qs.2 !! i).
 
-Definition sq_heap_cells (m : lr_mem) (ver_map : loc -> nat) : gmap loc (val * nat) :=
-  map_imap (fun l v => Some (v, ver_map l)) m.
+(** Sequential events cannot transfer ownership between threads. Values may
+    change on writes, but the permission map stays unchanged and ownership
+    must be full, even for same-value writes. External calls do not use this
+    relation. *)
+Section permissions.
+  Context {Loc : Type} `{Countable Loc}.
+  Local Notation heap := (gmap Loc Qp).
 
-Lemma sq_heap_cells_lookup m ver_map l :
-  sq_heap_cells m ver_map !! l = (fun v => (v, ver_map l)) <$> (m !! l).
-Proof. unfold lr_mem in *. rewrite /sq_heap_cells map_lookup_imap. by destruct (m !! l). Qed.
+  Inductive perm_event : @mem_ev Loc -> heap -> heap -> Prop :=
+  | PermRead h l q : h !! l = Some q ->
+      perm_event (atomic_machine.Read l) h h
+  | PermWrite h l : h !! l = Some 1%Qp ->
+      perm_event (atomic_machine.Write l) h h
+  | PermAlloc h l : h !! l = None ->
+      perm_event (atomic_machine.Alloc l) h (<[l := 1%Qp]> h)
+  | PermFree h l : h !! l = Some 1%Qp ->
+      perm_event (atomic_machine.Free l) h (delete l h).
 
-Lemma sq_heap_cells_values m ver_map : fst <$> sq_heap_cells m ver_map = m.
-Proof.
-  unfold lr_mem in *. apply map_eq. intros l. rewrite lookup_fmap sq_heap_cells_lookup.
-  unfold lr_mem in *. by destruct (m !! l).
-Qed.
+  Inductive perm_step : list (@mem_ev Loc) -> heap -> heap -> Prop :=
+  | PermNil h : perm_step [] h h
+  | PermCons ev T h1 h2 h3 : perm_event ev h1 h2 ->
+      perm_step T h2 h3 -> perm_step (ev :: T) h1 h3.
 
-Lemma sq_heap_cells_insert m ver_map ver_map' l v :
-  (forall k, k ≠ l -> ver_map' k = ver_map k) ->
-  sq_heap_cells (<[l := v]> m) ver_map' = <[l := (v, ver_map' l)]> (sq_heap_cells m ver_map).
-Proof.
-  intros Hver_map. apply map_eq. intros k. rewrite sq_heap_cells_lookup.
-  destruct (decide (k = l)) as [->|Hne].
-  - by rewrite !lookup_insert_eq.
-  - by rewrite !lookup_insert_ne // sq_heap_cells_lookup Hver_map.
-Qed.
-
-Lemma sq_heap_cells_delete m ver_map l :
-  sq_heap_cells (delete l m) ver_map = delete l (sq_heap_cells m ver_map).
-Proof.
-  apply map_eq. intros k. rewrite sq_heap_cells_lookup.
-  destruct (decide (k = l)) as [->|Hne].
-  - by rewrite !lookup_delete_eq.
-  - by rewrite !lookup_delete_ne // sq_heap_cells_lookup.
-Qed.
-
-Definition sq_count_next {A : Type} `{EqDecision A}
-    (ver_map : A -> nat) (l : A) : A -> nat :=
-  fun k => if decide (k = l) then S (ver_map k) else ver_map k.
-
-(** Only the current step's events are inspected; no execution history is kept. *)
-Definition sq_versions_after {A : Type} `{EqDecision A}
-    (T : list (@mem_ev A)) (ver_map : A -> nat) : A -> nat :=
-  foldl (fun ver_map ev => match ev with
-    | atomic_machine.Write l => sq_count_next ver_map l
-    | _ => ver_map
-    end) ver_map T.
-
-Definition sq_count_share (q : Qp) (n : nat) : Qc :=
-  (Qp_to_Qc q * Qc_of_Z (Z.of_nat n))%Qc.
-
-Lemma sq_count_share_add q1 q2 n :
-  sq_count_share (q1 + q2) n = (sq_count_share q1 n + sq_count_share q2 n)%Qc.
-Proof. by rewrite /sq_count_share Qp.to_Qc_inj_add Qcmult_plus_distr_l. Qed.
+  Lemma perm_step_singleton ev h1 h2 :
+    perm_step [ev] h1 h2 <-> perm_event ev h1 h2.
+  Proof.
+    split.
+    - inversion 1; subst.
+      match goal with Hnil : perm_step [] _ _ |- _ => inversion Hnil; subst; done end.
+    - intro. econstructor; eauto using PermNil.
+  Qed.
+End permissions.
 
 Section definitions.
   Context `{!sq_heapGS Σ}.
 
   Definition sq_pointsto (l : loc) (q : Qp) (v : val) : iProp Σ :=
-    ∃ n : nat, l ↪[sq_heap_name]{#q} (v, n).
-
-  (** The explicit contribution is rational: e.g. two halves at version 7
-      each contribute 7/2. The ghost payload agrees on the normalized version,
-      preventing a partial owner from incrementing just its contribution. *)
-  Definition sq_pointsto_count (l : loc) (q : Qp) (v : val) (c : Qc) : iProp Σ :=
-    ∃ n : nat, ⌜c = sq_count_share q n⌝ ∗ l ↪[sq_heap_name]{#q} (v, n).
-
+    own sq_heap_name (◯ {[l := (q, to_agree v)]}).
   Definition sq_pointsto_vec (l : loc) (q : Qp) (vl : list val) : iProp Σ :=
     [∗ list] i ↦ v ∈ vl, sq_pointsto (l +ₗ i) q v.
-
   Definition sq_freeable (l : loc) (q : Qp) (n : nat) : iProp Σ :=
     own sq_freeable_name (◯ {[ l.1 := (q, sq_inter (l.2) n) ]}).
 
-  Definition sq_heap_gen (m : lr_mem) (ver_map : loc -> nat) : iProp Σ :=
-    ∃ hF, ghost_map_auth sq_heap_name 1 (sq_heap_cells m ver_map) ∗
-      own sq_freeable_name (● hF) ∗ ⌜sq_freeable_rel m hF⌝.
-
-  Definition sq_heap (m : lr_mem) : iProp Σ := ∃ ver_map, sq_heap_gen m ver_map.
-
+  Definition sq_heap_gen (m : lr_mem) (h : perm_map) : iProp Σ :=
+    ∃ hF, own sq_heap_name (● sq_heap_cells m h) ∗
+      own sq_freeable_name (● hF) ∗ ⌜sq_heap_rel m h ∧ sq_freeable_rel m hF⌝.
+  Definition sq_heap (m : lr_mem) : iProp Σ := ∃ h, sq_heap_gen m h.
 End definitions.
 
 Notation "l ↦{ q } v" := (sq_pointsto l q v)
@@ -148,7 +179,7 @@ Proof.
   apply IH. by rewrite shift_loc_block.
 Qed.
 
-Local Lemma delete_sq_free (σ : lr_mem) l l' n :
+Local Lemma delete_sq_free {A : Type} (σ : gmap loc A) l l' n :
   delete l (free_gmap l' n σ) = free_gmap l' n (delete l σ).
 Proof.
   revert l'. induction n as [|n IH]=> l' //=. by rewrite delete_delete IH.
@@ -241,13 +272,8 @@ Section heap.
   Proof. apply _. Qed.
   Global Instance sq_pointsto_fractional l v : Fractional (λ q, l ↦{q} v)%I.
   Proof.
-    intros q1 q2. rewrite /sq_pointsto. iSplit.
-    - iIntros "Hl". iDestruct "Hl" as (n) "[H1 H2]".
-      iSplitL "H1"; iExists n; iAssumption.
-    - iIntros "[H1 H2]". iDestruct "H1" as (n1) "H1".
-      iDestruct "H2" as (n2) "H2".
-      iDestruct (ghost_map_elem_agree with "H1 H2") as %Heq.
-      injection Heq as ->. iExists n2. iCombine "H1 H2" as "H". iExact "H".
+    intros q1 q2. rewrite /sq_pointsto -own_op -auth_frag_op singleton_op.
+    by rewrite -pair_op /= agree_idemp.
   Qed.
   Global Instance sq_pointsto_as_fractional l q v :
     AsFractional (l ↦{q} v) (λ q, l ↦{q} v)%I q.
@@ -259,7 +285,6 @@ Section heap.
 
   Lemma sq_pointsto_vec_nil l q : l ↦∗{q} [] ⊣⊢ True.
   Proof. by rewrite /sq_pointsto_vec. Qed.
-
   Lemma sq_pointsto_vec_cons l q v vl :
     l ↦∗{q} (v :: vl) ⊣⊢ l ↦{q} v ∗ (l +ₗ 1) ↦∗{q} vl.
   Proof.
@@ -268,214 +293,181 @@ Section heap.
     by rewrite shift_loc_assoc Nat2Z.inj_succ Z.add_1_l.
   Qed.
 
-  Lemma sq_pointsto_count_forget l q v :
-    (∃ c : Qc, sq_pointsto_count l q v c) ⊣⊢ l ↦{q} v.
+  Lemma sq_pointsto_valid_2 l q1 q2 v1 v2 :
+    l ↦{q1} v1 -∗ l ↦{q2} v2 -∗ ⌜(q1 + q2 ≤ 1)%Qp ∧ v1 = v2⌝.
   Proof.
-    iSplit.
-    - iIntros "(%c & %n & _ & Hl)". by iExists n.
-    - iIntros "(%n & Hl)". iExists (sq_count_share q n), n. by iFrame.
+    iIntros "H1 H2". iCombine "H1 H2" gives %Hv.
+    move: Hv. rewrite -auth_frag_op singleton_op auth_frag_valid
+      singleton_valid -pair_op pair_valid /= to_agree_op_valid_L. done.
   Qed.
 
-  Lemma sq_pointsto_count_combine l q1 q2 v c1 c2 :
-    sq_pointsto_count l q1 v c1 -∗ sq_pointsto_count l q2 v c2 -∗
-    sq_pointsto_count l (q1 + q2) v (c1 + c2)%Qc.
+  (** A points-to fraction is bounded by the total stored at its location. *)
+  Lemma sq_heap_gen_lookup m p l q v :
+    sq_heap_gen m p -∗ l ↦{q} v -∗
+    ⌜m !! l = Some v ∧ exists qt, p !! l = Some qt ∧ (q ≤ qt ≤ 1)%Qp⌝.
   Proof.
-    iIntros "(%n1 & -> & H1) (%n2 & -> & H2)".
-    iDestruct (ghost_map_elem_agree with "H1 H2") as %Heq.
-    injection Heq as ->. iExists n2. rewrite sq_count_share_add.
-    iCombine "H1 H2" as "H". by iFrame.
+    unfold perm_map in *. iIntros "(%hF & Hh & _) Hl".
+    iCombine "Hh Hl" gives %[Hin Hvalid]%auth_both_valid_discrete.
+    move: Hin=> /singleton_included_l [x [Hx Hin]].
+    rewrite sq_heap_cells_lookup in Hx.
+    destruct (p !! l) as [qt|] eqn:Hp; rewrite Hp /= in Hx; last by inversion Hx.
+    destruct (m !! l) as [w|] eqn:Hm; rewrite /= in Hx; last by inversion Hx.
+    rewrite -Hx in Hin.
+    have Hqt : (qt ≤ 1)%Qp.
+    { specialize (Hvalid l). rewrite sq_heap_cells_lookup Hp Hm in Hvalid.
+      exact (proj1 Hvalid). }
+    iPureIntro. move: Hin=> /Some_included [Heq | Hin].
+    - destruct Heq as [Hq Hv]. apply (inj to_agree) in Hv.
+      change (q = qt) in Hq. change (v = w) in Hv. subst. eauto.
+    - move: Hin=> /pair_included [Hq Hv].
+      apply to_agree_included in Hv. change (v = w) in Hv. subst.
+      split; first done. exists qt. split; first done.
+      split; [by apply frac_included_weak | done].
   Qed.
 
-  Lemma sq_pointsto_count_split l q1 q2 v c :
-    sq_pointsto_count l (q1 + q2) v c -∗
-    ∃ c1 c2 : Qc, ⌜c = (c1 + c2)%Qc⌝ ∗
-      sq_pointsto_count l q1 v c1 ∗ sq_pointsto_count l q2 v c2.
+  Lemma sq_heap_gen_read m p l q v :
+    sq_heap_gen m p -∗ l ↦{q} v -∗ ⌜m !! l = Some v⌝.
   Proof.
-    iIntros "(%n & -> & [H1 H2])".
-    iExists (sq_count_share q1 n), (sq_count_share q2 n).
-    rewrite sq_count_share_add. iSplit; first done.
-    iSplitL "H1"; iExists n; by iFrame.
+    iIntros "Hm Hl". iDestruct (sq_heap_gen_lookup with "Hm Hl") as %[Hread _]. done.
   Qed.
 
-  Lemma sq_heap_cells_pointsto m ver_map :
-    ([∗ map] l ↦ vn ∈ sq_heap_cells m ver_map, l ↪[sq_heap_name] vn) -∗
-    [∗ map] l ↦ v ∈ m, l ↦ v.
+  Lemma sq_heap_gen_missing m p l :
+    m !! l = None -> sq_heap_gen m p -∗ ⌜p !! l = None⌝.
   Proof.
-    rewrite -{2}(sq_heap_cells_values m ver_map) big_sepM_fmap.
-    iApply big_sepM_mono. iIntros (l [v n] _) "Hl". by iExists n.
+    iIntros (Hnone) "(%hF & _ & _ & [%Hrel _])". iPureIntro.
+    apply (not_elem_of_dom (D := gset loc)).
+    apply (not_elem_of_dom (D := gset loc)) in Hnone.
+    unfold sq_heap_rel in Hrel. set_solver.
   Qed.
 
-  Lemma sq_heap_gen_read m ver_map l q v :
-    sq_heap_gen m ver_map -∗ l ↦{q} v -∗ ⌜m !! l = Some v⌝.
+  Lemma sq_heap_gen_full m p l v :
+    sq_heap_gen m p -∗ l ↦ v -∗ ⌜p !! l = Some 1%Qp⌝.
   Proof.
-    iIntros "(%hF & Hm & _) (%n & Hl)".
-    iDestruct (ghost_map_lookup with "Hm Hl") as %Hl.
-    rewrite sq_heap_cells_lookup in Hl.
-    destruct (m !! l); inversion Hl. done.
+    iIntros "Hm Hl". iDestruct (sq_heap_gen_lookup with "Hm Hl") as %(_ & q & Hp & Hlo & Hhi).
+    have Hq : q = 1%Qp by apply (anti_symm (≤)%Qp). subst q. done.
   Qed.
 
   Lemma sq_heap_read m l q v : sq_heap m -∗ l ↦{q} v -∗ ⌜m !! l = Some v⌝.
-  Proof. iIntros "(%ver_map & Hm) Hl". by iApply (sq_heap_gen_read with "Hm Hl"). Qed.
+  Proof. iIntros "(%h & Hm) Hl". by iApply (sq_heap_gen_read with "Hm Hl"). Qed.
 
-  Lemma sq_heap_gen_write m ver_map ver_map' l v v' :
-    (forall k, k ≠ l -> ver_map' k = ver_map k) ->
-    sq_heap_gen m ver_map -∗ l ↦ v ==∗ sq_heap_gen (<[l := v']> m) ver_map' ∗ l ↦ v'.
+  Lemma sq_heap_gen_write m p l v v' :
+    sq_heap_gen m p -∗ l ↦ v ==∗
+    sq_heap_gen (<[l := v']> m) p ∗ l ↦ v'.
   Proof.
-    iIntros (Hver_map) "(%hF & Hm & HF & %Hrel) (%n & Hl)".
-    iDestruct (ghost_map_lookup with "Hm Hl") as %Hl.
-    iMod (ghost_map_update (v', ver_map' l) with "Hm Hl") as "[Hm Hl]".
-    iModIntro. iSplitL "Hm HF".
-    - iExists hF. rewrite (sq_heap_cells_insert _ _ _ _ _ Hver_map). iFrame. iPureIntro.
-      eapply sq_freeable_rel_stable; first done.
-      rewrite sq_heap_cells_lookup in Hl. destruct (m !! l); naive_solver.
-    - by iExists (ver_map' l).
-  Qed.
-
-  Lemma sq_heap_gen_version m ver_map l q v n :
-    sq_heap_gen m ver_map -∗ l ↪[sq_heap_name]{#q} (v, n) -∗ ⌜n = ver_map l⌝.
-  Proof.
-    iIntros "(%hF & Hm & _) Hl".
-    iDestruct (ghost_map_lookup with "Hm Hl") as %Hl.
-    rewrite sq_heap_cells_lookup in Hl.
-    destruct (m !! l); inversion Hl. done.
-  Qed.
-
-  (** Even a same-value write cannot advance its version with a fraction
-      framed outside the update. [R] denotes any resources used by it. *)
-  Lemma sq_heap_gen_write_frame m m' ver_map l q v (R : iProp Σ) :
-    sq_heap_gen m ver_map -∗ l ↦{q} v -∗ R -∗
-    ⌜¬ (sq_heap_gen m ver_map ∗ R ⊢ |==>
-      sq_heap_gen m' (sq_versions_after [lr_write_event l] ver_map))⌝.
-  Proof.
-    iIntros "Hm (%n & Hl) HR" (Hupdate).
-    iDestruct (sq_heap_gen_version with "Hm Hl") as %Hbefore.
-    iApply (bupd_elim _).
-    iMod (Hupdate with "[$Hm $HR]") as "Hm".
-    iDestruct (sq_heap_gen_version with "Hm Hl") as %Hafter.
-    rewrite /sq_versions_after /= /sq_count_next decide_True in Hafter; last done.
-    lia.
-  Qed.
-
-  Lemma sq_heap_gen_write_step m ver_map l v v' :
-    sq_heap_gen m ver_map -∗ l ↦ v ==∗
-      sq_heap_gen (<[l := v']> m) (sq_versions_after [lr_write_event l] ver_map) ∗ l ↦ v'.
-  Proof.
-    apply sq_heap_gen_write. intros k Hne.
-    by rewrite /sq_versions_after /= /sq_count_next decide_False.
-  Qed.
-
-  (** A full contribution increases by one when this write rule is used.
-      This is an update law, not an inversion theorem for arbitrary WP proofs:
-      [sq_heap] itself does not force a same-value write to invoke this law. *)
-  Lemma sq_heap_write_count m l v v' c :
-    sq_heap m -∗ sq_pointsto_count l 1 v c ==∗
-      sq_heap (<[l := v']> m) ∗ sq_pointsto_count l 1 v' (c + 1)%Qc.
-  Proof.
-    iIntros "(%ver_map & %hF & Hm & HF & %Hrel) (%n & -> & Hl)".
-    iDestruct (ghost_map_lookup with "Hm Hl") as %Hl.
-    assert (m !! l = Some v /\ ver_map l = n) as [Hlookup Hn].
-    { rewrite sq_heap_cells_lookup in Hl.
-      destruct (m !! l); inversion Hl. done. }
-    iMod (ghost_map_update (v', S n) with "Hm Hl") as "[Hm Hl]".
-    iModIntro. iSplitL "Hm HF".
-    - iExists (sq_count_next ver_map l), hF.
-      rewrite (sq_heap_cells_insert _ ver_map (sq_count_next ver_map l)).
-      2: { intros k Hne. by rewrite /sq_count_next decide_False. }
-      rewrite /sq_count_next decide_True // Hn. iFrame. iPureIntro.
-      eapply sq_freeable_rel_stable; [exact Hrel | by eexists].
-    - iExists (S n). iFrame. iPureIntro.
-      change (1 * Qc_of_Z (Z.of_nat n) + 1 =
-        1 * Qc_of_Z (Z.of_nat (S n)))%Qc.
-      rewrite !Qcmult_1_l Nat2Z.inj_succ -Z.add_1_r Z2Qc_inj_add Z2Qc_inj_1.
-      done.
+    iIntros "Hm Hl". iDestruct (sq_heap_gen_full with "Hm Hl") as %Hp.
+    iDestruct (sq_heap_gen_read with "Hm Hl") as %Hm.
+    iDestruct "Hm" as (hF) "(Hm & HF & [%Hrel %HFrel])".
+    iMod (own_update_2 with "Hm Hl") as "[Hm Hl]".
+    { apply auth_update, (singleton_local_update _ _ (1%Qp, to_agree v)).
+      - by rewrite sq_heap_cells_lookup Hp Hm.
+      - apply (exclusive_local_update _ (1%Qp, to_agree v')). done. }
+    iModIntro. iFrame "Hl". iExists hF.
+    rewrite (sq_heap_cells_write _ _ _ _ _ Hp). iFrame. iPureIntro. split.
+    - unfold sq_heap_rel in *. rewrite dom_insert_L. set_solver.
+    - eapply sq_freeable_rel_stable; first done. by exists v.
   Qed.
 
   Lemma sq_heap_write m l v v' :
     sq_heap m -∗ l ↦ v ==∗ sq_heap (<[l := v']> m) ∗ l ↦ v'.
   Proof.
-    iIntros "Hm (%n & Hl)".
-    iMod (sq_heap_write_count _ _ _ _ (sq_count_share 1 n) with "Hm [Hl]")
-      as "[$ (%n' & _ & Hl)]".
-    { iExists n. by iFrame. }
-    iModIntro. by iExists n'.
+    iIntros "(%h & Hm) Hl". iMod (sq_heap_gen_write with "Hm Hl") as "[Hm $]".
+    iModIntro. by iExists _.
   Qed.
 
-  Local Lemma sq_heap_alloc_values m ver_map l n :
-    (∀ z : Z, m !! (l +ₗ z) = None) ->
-    ghost_map_auth sq_heap_name 1 (sq_heap_cells m ver_map) ==∗
-      ghost_map_auth sq_heap_name 1 (sq_heap_cells (alloc_gmap (LitV LitPoison) l n m) ver_map) ∗
-      l ↦∗ repeat (LitV LitPoison) n.
+  Local Lemma sq_heap_alloc_values m p l n :
+    (∀ z : Z, m !! (l +ₗ z) = None) -> sq_heap_rel m p ->
+    own sq_heap_name (● sq_heap_cells m p) ==∗
+    own sq_heap_name (● sq_heap_cells (alloc_gmap (LitV LitPoison) l n m)
+      (alloc_gmap 1%Qp l n p)) ∗
+    ⌜sq_heap_rel (alloc_gmap (LitV LitPoison) l n m)
+      (alloc_gmap 1%Qp l n p)⌝ ∗
+    l ↦∗ repeat (LitV LitPoison) n.
   Proof.
-    revert l. induction n as [|n IH]=> l Hfresh.
-    { iIntros "$ !>". by rewrite sq_pointsto_vec_nil. }
-    iIntros "Hm".
-    iMod (IH (l +ₗ 1) with "Hm") as "[Hm Hl]".
+    revert m p l. induction n as [|n IH]=> m p l Hfresh Hrel.
+    { iIntros "$ !>". rewrite sq_pointsto_vec_nil. auto. }
+    iIntros "Hp".
+    iMod (IH m p (l +ₗ 1) with "Hp") as "(Hp & %Hrel' & Hl)".
     { intros z. by rewrite shift_loc_assoc. }
-    iMod (ghost_map_insert l (LitV LitPoison, ver_map l) with "Hm") as "[Hm Hv]".
-    { rewrite sq_heap_cells_lookup lookup_sq_alloc_ne; last (simpl; lia). by rewrite -(shift_loc_0 l) Hfresh. }
-    iModIntro. simpl. rewrite (sq_heap_cells_insert _ ver_map ver_map); last done.
-    rewrite sq_pointsto_vec_cons. by iFrame.
+    { exact Hrel. }
+    have Hnone : alloc_gmap (LitV LitPoison) (l +ₗ 1) n m !! l = None.
+    { rewrite lookup_sq_alloc_ne; last (simpl; lia).
+      by rewrite -(shift_loc_0 l) Hfresh. }
+    iMod (own_update with "Hp") as "[Hp Hv]".
+    { apply auth_update_alloc, (alloc_singleton_local_update _ l (1%Qp, to_agree (LitV LitPoison))).
+      - rewrite sq_heap_cells_lookup Hnone.
+        by destruct (alloc_gmap 1%Qp (l +ₗ 1) n p !! l) eqn:Hp; rewrite Hp.
+      - done. }
+    iModIntro. simpl. rewrite sq_heap_cells_insert sq_pointsto_vec_cons.
+    iFrame. iPureIntro. by apply sq_heap_rel_insert.
   Qed.
 
-  Lemma sq_heap_gen_alloc m ver_map l (n : Z) :
+  Lemma sq_heap_gen_alloc m h l (n : Z) :
     0 < n -> (∀ z, m !! (l +ₗ z) = None) ->
-    sq_heap_gen m ver_map ==∗ sq_heap_gen (alloc_gmap (LitV LitPoison) l (Z.to_nat n) m) ver_map ∗
-      †l…(Z.to_nat n) ∗ l ↦∗ repeat (LitV LitPoison) (Z.to_nat n).
+    sq_heap_gen m h ==∗
+    sq_heap_gen (alloc_gmap (LitV LitPoison) l (Z.to_nat n) m)
+      (alloc_gmap 1%Qp l (Z.to_nat n) h) ∗
+    †l…(Z.to_nat n) ∗ l ↦∗ repeat (LitV LitPoison) (Z.to_nat n).
   Proof.
-    iIntros (Hn Hfresh) "(%hF & Hm & HF & %Hrel)".
+    iIntros (Hn Hfresh) "(%hF & Hm & HF & [%Hrel %HFrel])".
     assert (Z.to_nat n ≠ O) by lia.
-    iMod (sq_heap_alloc_values with "Hm") as "[Hm $]"; first done.
+    iMod (sq_heap_alloc_values with "Hm") as "(Hm & %Hrel' & $)"; [done | done | ].
     iMod (own_update _ (● hF) with "HF") as "[HF Hfree]".
     { apply auth_update_alloc,
         (alloc_singleton_local_update _ (l.1) (1%Qp, sq_inter (l.2) (Z.to_nat n))).
       - eauto using sq_freeable_rel_None.
       - split; first done. apply sq_inter_valid. }
     iModIntro. iFrame "Hfree". iExists _. iFrame. iPureIntro.
-    by apply sq_freeable_rel_alloc.
+    split; first done. by apply sq_freeable_rel_alloc.
   Qed.
 
-  Local Lemma sq_heap_free_values m ver_map l vl :
-    ghost_map_auth sq_heap_name 1 (sq_heap_cells m ver_map) -∗ l ↦∗ vl ==∗
-      ghost_map_auth sq_heap_name 1 (sq_heap_cells (free_gmap l (length vl) m) ver_map).
+  Local Lemma sq_heap_free_values m p l vl :
+    sq_heap_rel m p ->
+    own sq_heap_name (● sq_heap_cells m p) -∗ l ↦∗ vl ==∗
+    own sq_heap_name (● sq_heap_cells (free_gmap l (length vl) m)
+      (free_gmap l (length vl) p)) ∗
+    ⌜sq_heap_rel (free_gmap l (length vl) m) (free_gmap l (length vl) p)⌝.
   Proof.
-    revert m l. induction vl as [|v vl IH]=> m l.
-    { by iIntros "$ _". }
-    rewrite sq_pointsto_vec_cons. iIntros "Hm [(%n & Hv) Hl]".
-    iMod (ghost_map_delete with "Hm Hv") as "Hm".
+    revert m p l. induction vl as [|v vl IH]=> m p l Hrel.
+    { iIntros "$ _ !>". done. }
+    rewrite sq_pointsto_vec_cons. iIntros "Hm [Hv Hl]".
+    iMod (own_update_2 with "Hm Hv") as "Hm".
+    { apply auth_update_dealloc, (delete_singleton_local_update _ _ _). }
     iEval (rewrite -sq_heap_cells_delete) in "Hm".
-    iMod (IH with "Hm Hl") as "Hm".
-    simpl. rewrite delete_sq_free. by iFrame.
+    iMod (IH (delete l m) (delete l p) with "Hm Hl") as "[Hm %Hrel']".
+    { by apply sq_heap_rel_delete. }
+    simpl. rewrite !delete_sq_free. by iFrame.
   Qed.
 
-  Lemma sq_heap_gen_free m ver_map l vl (n : Z) :
+  Lemma sq_heap_gen_free m h l vl (n : Z) :
     n = length vl ->
-    sq_heap_gen m ver_map -∗ l ↦∗ vl -∗ †l…(length vl) ==∗
+    sq_heap_gen m h -∗ l ↦∗ vl -∗ †l…(length vl) ==∗
       ⌜0 < n⌝ ∗ ⌜∀ z, is_Some (m !! (l +ₗ z)) ↔ 0 ≤ z < n⌝ ∗
-      sq_heap_gen (free_gmap l (Z.to_nat n) m) ver_map.
+      sq_heap_gen (free_gmap l (Z.to_nat n) m) (free_gmap l (Z.to_nat n) h).
   Proof.
-    iIntros (Hn) "(%hF & Hm & HF & %Hrel) Hl Hfree".
+    iIntros (Hn) "(%hF & Hm & HF & [%Hrel %HFrel]) Hl Hfree".
     iCombine "HF Hfree" gives %[Hin Hvalid]%auth_both_valid_discrete.
     move: Hin=> /singleton_included_l [[q qs] [/leibniz_equiv_iff Hlookup Hin]].
     apply (Some_included_exclusive _ _) in Hin as [=<-<-]%leibniz_equiv; last first.
     { move: (Hvalid (l.1)). rewrite Hlookup. by intros [??]. }
     assert (vl ≠ []).
-    { intros ->. by destruct (Hrel (l.1) (1%Qp, ∅)) as [[] ?]. }
+    { intros ->. by destruct (HFrel (l.1) (1%Qp, ∅)) as [[] ?]. }
     assert (0 < n) by (subst n; by destruct vl).
-    iMod (sq_heap_free_values with "Hm Hl") as "Hm".
+    iMod (sq_heap_free_values with "Hm Hl") as "[Hm %Hrel']"; first done.
     iMod (own_update_2 with "HF Hfree") as "HF".
     { apply auth_update_dealloc, (delete_singleton_local_update _ _ _). }
     iModIntro; subst n. repeat iSplit; eauto using sq_freeable_is_Some.
     iExists _. rewrite Nat2Z.id. iFrame. iPureIntro.
-    by eapply sq_freeable_rel_free.
+    split; first done. by eapply sq_freeable_rel_free.
   Qed.
+
   Lemma sq_heap_alloc m l (n : Z) :
     0 < n -> (∀ z, m !! (l +ₗ z) = None) ->
     sq_heap m ==∗ sq_heap (alloc_gmap (LitV LitPoison) l (Z.to_nat n) m) ∗
       †l…(Z.to_nat n) ∗ l ↦∗ repeat (LitV LitPoison) (Z.to_nat n).
   Proof.
-    iIntros (Hn Hfresh) "(%ver_map & Hm)".
+    iIntros (Hn Hfresh) "(%h & Hm)".
     iMod (sq_heap_gen_alloc with "Hm") as "[Hm $]"; [done | done | ].
-    iModIntro. by iExists ver_map.
+    iModIntro. by iExists _.
   Qed.
 
   Lemma sq_heap_free m l vl (n : Z) :
@@ -484,8 +476,8 @@ Section heap.
       ⌜0 < n⌝ ∗ ⌜∀ z, is_Some (m !! (l +ₗ z)) ↔ 0 ≤ z < n⌝ ∗
       sq_heap (free_gmap l (Z.to_nat n) m).
   Proof.
-    iIntros (Hn) "(%ver_map & Hm) Hl Hfree".
+    iIntros (Hn) "(%h & Hm) Hl Hfree".
     iMod (sq_heap_gen_free _ _ _ _ n Hn with "Hm Hl Hfree") as "[$ [$ Hm]]".
-    iModIntro. by iExists ver_map.
+    iModIntro. by iExists _.
   Qed.
 End heap.

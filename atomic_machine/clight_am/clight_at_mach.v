@@ -24,7 +24,7 @@ Section ClightInstantiation.
   (** Clight-specialized atomic-machine types. *)
   Local Notation clight_mem_ev := (@mem_ev address).
   Local Notation clight_atomic_op :=
-    (@atomic_op address val memory_chunk).
+    (@atomic_op address val memory_chunk Clight_core.CC_core).
 
   Definition clight_ValEq (m : mem) (v1 v2 : val) : Prop :=
     Val.cmpu_bool (Mem.valid_pointer m) Ceq v1 v2 = Some true.
@@ -69,11 +69,11 @@ Section ClightInstantiation.
     flat_map clight_into_ev trace.
 
   (** Atomic external calls and their post-call continuations. *)
-  Inductive clight_external
+  Inductive clight_external (ge : Clight.genv)
       : Clight_core.CC_core -> clight_atomic_op ->
         (option val -> Clight_core.CC_core) -> Prop :=
   | ClightExternalLoad sg tyargs tyret cc b ofs k :
-      clight_external
+      clight_external ge
         (Clight_core.Callstate
           (Ctypes.External (EF_external "atomic_load" sg)
             tyargs tyret cc)
@@ -81,7 +81,7 @@ Section ClightInstantiation.
         (ALoad Mint32 (b, Ptrofs.unsigned ofs))
         (fun ov => Clight_core.Returnstate (force_val ov) k)
   | ClightExternalStore sg tyargs tyret cc b ofs v k :
-      clight_external
+      clight_external ge
         (Clight_core.Callstate
           (Ctypes.External (EF_external "atomic_store" sg)
             tyargs tyret cc)
@@ -89,35 +89,20 @@ Section ClightInstantiation.
         (AStore Mint32 (b, Ptrofs.unsigned ofs) v)
         (fun _ => Clight_core.Returnstate Vundef k)
   | ClightExternalCas sg tyargs tyret cc b ofs v_exp v_new k :
-      clight_external
+      clight_external ge
         (Clight_core.Callstate
           (Ctypes.External (EF_external "atomic_CAS" sg)
             tyargs tyret cc)
           [Vptr b ofs; v_exp; v_new] k)
         (ACAS Mint32 (b, Ptrofs.unsigned ofs) v_exp v_new)
-        (fun ov => Clight_core.Returnstate (force_val ov) k).
-
-  (** Return from an atomic external: the post-call continuation applied to
-      the returned value. *)
-  Inductive clight_after_external
-      : Clight_core.CC_core -> option val -> Clight_core.CC_core -> Prop :=
-  | ClightAfterExternal c op k ov :
-      clight_external c op k ->
-      clight_after_external c ov (k ov).
-
-  (** Thread creation through the [spawn] external: the new thread calls
-      the given function pointer on the given argument, as in
-      [Clight_core.cl_initial_core]. *)
-  Inductive clight_spawn (ge : Clight.genv)
-      : Clight_core.CC_core -> Clight_core.CC_core -> Clight_core.CC_core -> Prop :=
-  | ClightSpawn sg tyargs tyret cc fptr arg k c_new :
+        (fun ov => Clight_core.Returnstate (force_val ov) k)
+  | ClightExternalSpawn sg tyargs tyret cc fptr arg k c_new :
       Clight_core.cl_initial_core ge fptr [arg] = Some c_new ->
-      clight_spawn ge
+      clight_external ge
         (Clight_core.Callstate
           (Ctypes.External (EF_external "spawn" sg) tyargs tyret cc)
           [fptr; arg] k)
-        (Clight_core.Returnstate Vundef k)
-        c_new.
+        (ASpawn c_new) (fun _ => Clight_core.Returnstate Vundef k).
 
   #[global] Instance clight_mem_mixin :
       Memory (Loc := address) (Val := val)
@@ -139,15 +124,14 @@ Section ClightInstantiation.
       ev_step_with_mem_ev evsem_inst c m (clight_into_evs T) c' m'.
 
   #[global] Instance Clight_language (ge : Clight.genv)
-      : @sqlang address val _ _ mem memory_chunk :=
+      : @sqlang address val _ _ mem memory_chunk Clight_core.CC_core :=
     {| sqlang_memory := clight_mem_mixin;
       sqlang_thrd_st := Clight_core.CC_core;
       sqlang_true_val := Values.Vtrue;
       sqlang_false_val := Values.Vfalse;
       sqlang_step := ev_step_with_mem_ev (Clight_evsem.CLC_evsem ge);
-      sqlang_at_external := clight_external;
-      sqlang_after_external := clight_after_external;
-      sqlang_spawn := clight_spawn ge;
+      sqlang_expr_to_thrd_st := id;
+      sqlang_at_external := clight_external ge;
       sqlang_final := fun c => Clight_core.cl_halted c <> None;
       sqlang_ValEq := clight_ValEq;
       sqlang_ValNEq := clight_ValNEq |}.

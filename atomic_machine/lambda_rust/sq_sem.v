@@ -258,11 +258,6 @@ Inductive lr_external
       (fill K e) op
       (fun ov => fill K (k ov)).
 
-Inductive lr_after_external : expr -> option val -> expr -> Prop :=
-| LRAfterExternal e op k ov :
-    lr_external e op k ->
-    lr_after_external e ov (k ov).
-
 (** A thread has terminated once it is a value. *)
 Definition lr_final (e : expr) : Prop := is_Some (to_val e).
 
@@ -275,7 +270,6 @@ Definition lr_final (e : expr) : Prop := is_Some (to_val e).
      sqlang_step := lr_step;
      sqlang_expr_to_thrd_st := id;
      sqlang_at_external := lr_external;
-     sqlang_after_external := lr_after_external;
      sqlang_final := lr_final;
      sqlang_ValEq := lr_val_eq;
      sqlang_ValNEq := lr_val_neq |}.

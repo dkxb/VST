@@ -526,16 +526,16 @@ Section state_interp.
   Definition at_resv (m : lr_mem) (mu : rw_map) : iProp Σ :=
     ∃ (R : gmap nat (loc * Qp * val)) (Wm : gmap loc val) (P : gset loc),
       (** A pending na-read (i.e. Core_Try'ed but not Core_Commit'ed) of
-      [l {q}↦ v] adds an entry [k ↦ (l, q, v)] to [R], where [k] is a fresh 
+      [l {q}↦ v] adds an entry [k ↦ (l, q, v)] to [R], where [k] is a fresh
       key; the threoad gets the frag piece [k ↪[lrAtGS_reads_name] (l, q, v)].
       The points-to [l {q}↦ v] is also transferred to [at_resv].
-      
+
       When the thread commits, it turns in [k ↪[lrAtGS_reads_name] (l, q, v)],
       removes the entry from [R], and takes [l {q}↦ v] back.
-      
+
       The [lrAtGS_reads_name] ghost state only appears between Try and Commit,
       does not appear in the proof rule's logic level. The points-to keeps
-      its value, ownership fraction, and hidden write version. *)
+      its value and ownership fraction. *)
       ghost_map_auth lrAtGS_reads_name 1 R ∗ ([∗ map] x ∈ R, x.1.1 ↦{x.1.2} x.2) ∗
       (* Similarly, a pending write adds the write location and value to [Wm]
       and keeps the points-to until commit. *)
@@ -563,8 +563,9 @@ Section resv.
 
   Lemma heap_pointsto_excl' l q v w : l ↦ v ∗ l ↦{q} w ⊢ ⌜False⌝.
   Proof.
-    iIntros "[(%n1 & H1) (%n2 & H2)]".
-    iDestruct (ghost_map_elem_ne with "H1 H2") as %Hne. done.
+    iIntros "[H1 H2]".
+    iDestruct (sq_pointsto_valid_2 with "H1 H2") as %[Hq _].
+    exfalso. exact (Qp.not_add_le_l 1 q Hq).
   Qed.
 
   Lemma heap_pointsto_excl l q v w : l ↦ v -∗ l ↦{q} w -∗ False.

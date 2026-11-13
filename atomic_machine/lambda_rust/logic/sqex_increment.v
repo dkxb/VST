@@ -9,6 +9,7 @@ Require Import VST.atomic_machine.lambda_rust.logic.sqex_rules.
 
 Set Default Proof Using "Type".
 Local Existing Instance lrSqGS_invGS.
+Local Existing Instance lr_ext_specs.
 
 Definition sc_increment (p : expr) : expr :=
   (let: "n" := !ˢᶜ p in p <-ˢᶜ ("n" + #1))%E.
@@ -22,7 +23,7 @@ Definition two_increments : sq_expr :=
 Definition counterN : namespace := nroot .@ "sqex_counter".
 
 Section proof.
-  Context `{!ExtCallSems lr_language, !lrSqGS Σ, !satisfy_conc_triples Σ}.
+  Context `{!lrSqGS Σ}.
 
   Definition counter_inv (l : loc) : iProp Σ :=
     ∃ n : Z, ⌜0 ≤ n⌝ ∗ l ↦ #n.
