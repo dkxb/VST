@@ -119,6 +119,78 @@ Section external_steps.
     iModIntro. by iFrame.
   Qed.
 
+  Lemma sqex_external_cas_suc_pending E C tp m p hF mu i e k l ve vn old Φ :
+    sq_heap_name ≠ sq_freeable_name -> sq_heap_rel m p -> sq_freeable_rel m hF ->
+    ✓ sq_heap_cells m p -> sqex_pool_matches C tp -> sqex_pool_reservations tp m mu ->
+    tp !! i = Some (Running e []) -> lr_external e (ACAS tt l ve vn) k ->
+    m !! l = Some old -> lr_val_eq m old ve ->
+    uPred_ownM (sqex_state_resource m p hF) -∗ EXWP e @ E {{ Φ }} -∗
+    sqex_exact_threads_inv m hF (delete i C) ={E,∅}=∗
+      ▷ |={∅,E}=> uPred_ownM (sqex_state_resource (<[l := vn]> m) p hF) ∗
+        EXWP k (Some (LitV (LitInt 1))) @ E {{ Φ }} ∗
+        sqex_exact_threads_inv (<[l := vn]> m) hF (delete i C).
+  Proof.
+    intros Hnames Hrel HFrel Hvalid Hmatch Hres Hi He Hload Heq.
+    iIntros "Hstate Hwp Hothers". rewrite (exwp_ext_unfold _ _ _ _ _ He).
+    iMod "Hwp" as ([cur expected]) "[[%Hexpected Hl] Hcont]". simpl in Hexpected.
+    iDestruct (sqex_state_lookup with "Hstate Hl") as %[Hm _]; [done | done |].
+    simpl in Hm. have Hold : old = LitV (LitInt cur) by congruence.
+    have Hsame : cur = expected.
+    { rewrite Hold Hexpected /lr_val_eq in Heq. by inversion Heq. }
+    subst expected.
+    iDestruct (sqex_exact_access_frame with "Hstate Hl Hothers") as %Hframe;
+      [exact Hnames | exact Hvalid |].
+    iMod (sqex_state_write with "Hstate Hl") as "[Hstate Hl]"; [done | done |].
+    iEval (rewrite -(sqex_exact_threads_inv_write_frame _ _ _ _ _ _ vn Hframe
+      (ex_intro _ (LitV (LitInt cur)) Hm))) in "Hothers".
+    iModIntro. iNext.
+    iMod ("Hcont" $! (Some (LitV (LitInt 1))) with "[Hl]") as "Hwp".
+    { simpl. rewrite bool_decide_true // decide_True //. by iFrame. }
+    iModIntro. by iFrame.
+  Qed.
+
+  Lemma sqex_external_cas_fail_pending E C tp m p hF mu i e k l ve vn old Φ :
+    sq_heap_name ≠ sq_freeable_name -> sq_heap_rel m p -> sq_freeable_rel m hF ->
+    ✓ sq_heap_cells m p -> sqex_pool_matches C tp -> sqex_pool_reservations tp m mu ->
+    tp !! i = Some (Running e []) -> lr_external e (ACAS tt l ve vn) k ->
+    m !! l = Some old -> lr_val_neq m old ve ->
+    uPred_ownM (sqex_state_resource m p hF) -∗ EXWP e @ E {{ Φ }} -∗
+    sqex_exact_threads_inv m hF (delete i C) ={E,∅}=∗
+      ▷ |={∅,E}=> uPred_ownM (sqex_state_resource m p hF) ∗
+        EXWP k (Some (LitV (LitInt 0))) @ E {{ Φ }} ∗
+        sqex_exact_threads_inv m hF (delete i C).
+  Proof.
+    intros Hnames Hrel HFrel Hvalid Hmatch Hres Hi He Hload Hneq.
+    iIntros "Hstate Hwp Hothers". rewrite (exwp_ext_unfold _ _ _ _ _ He).
+    iMod "Hwp" as ([cur expected]) "[[%Hexpected Hl] Hcont]". simpl in Hexpected.
+    iDestruct (sqex_state_lookup with "Hstate Hl") as %[Hm _]; [done | done |].
+    simpl in Hm. have Hold : old = LitV (LitInt cur) by congruence.
+    have Hdifferent : cur ≠ expected.
+    { rewrite Hold Hexpected /lr_val_neq in Hneq. inversion Hneq. congruence. }
+    iModIntro. iNext.
+    iMod ("Hcont" $! (Some (LitV (LitInt 0))) with "[Hl]") as "Hwp".
+    { simpl. rewrite bool_decide_false // decide_False //. by iFrame. }
+    iModIntro. by iFrame.
+  Qed.
+
+  Lemma sqex_external_cas_writable E C tp m p hF mu i e k l ve vn Φ :
+    sq_heap_name ≠ sq_freeable_name -> sq_heap_rel m p -> sq_freeable_rel m hF ->
+    ✓ sq_heap_cells m p -> sqex_pool_matches C tp -> sqex_pool_reservations tp m mu ->
+    tp !! i = Some (Running e []) -> lr_external e (ACAS tt l ve vn) k ->
+    uPred_ownM (sqex_state_resource m p hF) -∗ EXWP e @ E {{ Φ }} -∗
+    sqex_exact_threads_inv m hF (delete i C) ={E,∅}=∗ ⌜mu !! l = Some (Rst 0)⌝.
+  Proof.
+    intros Hnames Hrel HFrel Hvalid Hmatch Hres Hi He.
+    iIntros "Hstate Hwp Hothers". rewrite (exwp_ext_unfold _ _ _ _ _ He).
+    iMod "Hwp" as ([cur expected]) "[[_ Hl] _]".
+    iDestruct (sqex_state_lookup with "Hstate Hl") as %[Hm _]; [done | done |].
+    iDestruct (sqex_exact_access_frame with "Hstate Hl Hothers") as %Hframe;
+      [exact Hnames | exact Hvalid |].
+    iModIntro. iPureIntro.
+    exact (sqex_access_frame_writable _ _ _ _ _ _ _ _
+      Hframe Hmatch Hres Hi (ex_intro _ (LitV (LitInt cur)) Hm)).
+  Qed.
+
   Lemma sqex_external_spawn_pending E C tp m p hF mu i e k child j Φ :
     tp !! i = Some (Running e []) -> lr_external e (ASpawn child) k ->
     tp !! j = None -> (forall n, n < j -> is_Some (tp !! n)) ->

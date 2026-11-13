@@ -225,13 +225,13 @@ Section rules.
   Qed.
 End rules.
 
-(** The contracts used by the SC examples. CAS has no contract in this
-    collection; clients can supply a different [ExtCallSpecs] collection. *)
+(** The contracts used by the SC examples. CAS compares integer values and
+    requires full ownership, whether the comparison succeeds or fails. *)
 Definition lr_ext_args (op : @atomic_op loc val lr_layout expr) : Type :=
   match op with
   | ALoad _ _ => Qp * val
   | AStore _ _ _ => val
-  | ACAS _ _ _ _ => Empty_set
+  | ACAS _ _ _ _ => Z * Z
   | ASpawn _ => unit
   end.
 
@@ -243,7 +243,8 @@ Section concurrent_specs.
     match op as op return lr_ext_args op -> (sq_expr -> iProp Σ) -> iProp Σ with
     | ALoad _ l => fun qv _ => l ↦{qv.1} qv.2
     | AStore _ l _ => fun v _ => l ↦ v
-    | ACAS _ _ _ _ => fun x _ => match x with end
+    | ACAS _ l v_exp _ => fun x _ =>
+        ⌜v_exp = LitV (LitInt x.2)⌝ ∗ l ↦ LitV (LitInt x.1)
     | ASpawn e => fun _ W => W e
     end%I.
 
@@ -256,7 +257,9 @@ Section concurrent_specs.
     match op as op return lr_ext_args op -> option val -> iProp Σ with
     | ALoad _ l => fun qv ov => ⌜ov = Some qv.2⌝ ∗ l ↦{qv.1} qv.2
     | AStore _ l v => fun _ ov => ⌜ov = None⌝ ∗ l ↦ v
-    | ACAS _ _ _ _ => fun x _ => match x with end
+    | ACAS _ l _ v_new => fun x ov =>
+        ⌜ov = Some (LitV (lit_of_bool (bool_decide (x.1 = x.2))))⌝ ∗
+        l ↦ (if decide (x.1 = x.2) then v_new else LitV (LitInt x.1))
     | ASpawn _ => fun _ ov => ⌜ov = None⌝
     end%I.
 
@@ -302,6 +305,50 @@ Section concurrent_rules.
     iModIntro. iApply (exwp_value _ (LitV LitPoison)). by iApply "HΦ".
   Qed.
 
+  Lemma conc_wp_cas_int E l z_exp (e_new : sq_expr) lit_new z_cur :
+    IntoVal e_new (LitV lit_new) ->
+    {{{ ▷ l ↦ LitV (LitInt z_cur) }}}
+      EXWP (CAS (Lit $ LitLoc l) (Lit $ LitInt z_exp) e_new : sq_expr) @ E
+    {{{ RET (LitV (lit_of_bool (bool_decide (z_cur = z_exp))) : sq_val);
+        l ↦ (if decide (z_cur = z_exp) then LitV lit_new else LitV (LitInt z_cur)) }}}.
+  Proof.
+    intros Hval Φ. iIntros "Hl HΦ".
+    assert (Hv : to_val e_new = Some (LitV lit_new)).
+    { rewrite -(@into_val sq_lang e_new (LitV lit_new) Hval). apply to_of_val. }
+    iApply (exwp_lift_external _ _
+      (ACAS tt l (LitV (LitInt z_exp)) (LitV lit_new)) lr_result_expr).
+    { apply (LREctxExternal []). by constructor. }
+    iMod (fupd_mask_subseteq ∅) as "Hclose"; first set_solver.
+    iMod "Hl" as "Hl".
+    iModIntro. iExists (z_cur, z_exp). simpl. iFrame "Hl". iSplit; first done.
+    iNext. iIntros (ov) "[-> Hl]". iMod "Hclose" as "_".
+    iModIntro. iApply exwp_value. by iApply "HΦ".
+  Qed.
+
+  Lemma conc_wp_cas_int_suc E l z_exp (e_new : sq_expr) lit_new :
+    IntoVal e_new (LitV lit_new) ->
+    {{{ ▷ l ↦ LitV (LitInt z_exp) }}}
+      EXWP (CAS (Lit $ LitLoc l) (Lit $ LitInt z_exp) e_new : sq_expr) @ E
+    {{{ RET (LitV (LitInt 1) : sq_val); l ↦ LitV lit_new }}}.
+  Proof.
+    intros Hval Φ. iIntros "Hl HΦ".
+    iApply (conc_wp_cas_int E l z_exp e_new lit_new z_exp Hval with "Hl").
+    rewrite bool_decide_true; last done. rewrite decide_True; last done.
+    done.
+  Qed.
+
+  Lemma conc_wp_cas_int_fail E l z_exp (e_new : sq_expr) lit_new z_cur :
+    IntoVal e_new (LitV lit_new) -> z_exp ≠ z_cur ->
+    {{{ ▷ l ↦ LitV (LitInt z_cur) }}}
+      EXWP (CAS (Lit $ LitLoc l) (Lit $ LitInt z_exp) e_new : sq_expr) @ E
+    {{{ RET (LitV (LitInt 0) : sq_val); l ↦ LitV (LitInt z_cur) }}}.
+  Proof.
+    intros Hval Hne Φ. iIntros "Hl HΦ".
+    iApply (conc_wp_cas_int E l z_exp e_new lit_new z_cur Hval with "Hl").
+    rewrite bool_decide_false; last congruence. rewrite decide_False; last congruence.
+    done.
+  Qed.
+
   Lemma conc_wp_fork E (e : sq_expr) :
     {{{ ▷ EXWP e {{ _, True }} }}} EXWP (Fork e : sq_expr) @ E
     {{{ RET (LitV LitPoison : sq_val); True }}}.
@@ -334,6 +381,18 @@ Section concurrent_rules.
     eapply (exwp_atomic_ext _ _ _ (AStore tt l v) (fun _ => Lit LitPoison)).
     - apply (LREctxExternal []). constructor. apply to_of_val.
     - intros x ov. iIntros "_". eauto.
+  Qed.
+
+  Lemma exwp_cas_atomic E1 E2 l lit_exp lit_new Φ :
+    (|={E1,E2}=> EXWP (CAS (Lit (LitLoc l)) (Lit lit_exp) (Lit lit_new)) @ E2
+      {{ v, |={E2,E1}=> Φ v }}) ⊢
+    EXWP (CAS (Lit (LitLoc l)) (Lit lit_exp) (Lit lit_new)) @ E1 {{ Φ }}.
+  Proof.
+    eapply (exwp_atomic_ext _ _ _
+      (ACAS tt l (LitV lit_exp) (LitV lit_new)) lr_result_expr).
+    - apply (LREctxExternal []). by constructor.
+    - intros [z_cur z_exp] ov. simpl. iIntros "[-> _]".
+      iPureIntro. eexists. apply to_of_val.
   Qed.
 End concurrent_rules.
 

@@ -169,7 +169,25 @@ Section pool_resources.
         eapply SC_Write; [apply (lookup_singleton_eq (M := gmap nat)) | exact Hcall | | ].
         * by apply Forall_singleton.
         * by rewrite /= Hm.
-      + destruct x.
+      + destruct ly, x as [cur expected].
+        iDestruct "Hpre" as "[%Hexpected Hl]". simpl in Hexpected.
+        iDestruct (sq_heap_gen_read with "[Hstate] Hl") as %Hm.
+        { by iApply (sqex_state_resource_heap _ _ _ Hrel HFrel with "Hstate"). }
+        iDestruct (sqex_exact_access_frame _ _ _ _ _ _ _ _ Hnames Hvalid
+          with "Hstate Hl Hothers") as %Hframe.
+        have Hmu := sqex_access_frame_writable _ _ _ _ _ _ _ _
+          Hframe Hmatch Hres Hi ltac:(by exists (LitV (LitInt cur))).
+        subst ve. iModIntro. iNext. iPureIntro. right.
+        destruct (decide (cur = expected)) as [->|Hne]; eexists.
+        * eapply SC_Cas_Suc; [apply (lookup_singleton_eq (M := gmap nat))
+            | exact Hcall | | exact Hm | | ].
+          -- by apply Forall_singleton.
+          -- simpl. constructor.
+          -- by rewrite /= Hm.
+        * eapply SC_Cas_Fail; [apply (lookup_singleton_eq (M := gmap nat))
+            | exact Hcall | | exact Hm | ].
+          -- apply Forall_singleton. by rewrite Hmu.
+          -- simpl. constructor. congruence.
       + destruct (tpool_least_free {[0%nat := Running (sqex_thread_expr c) []]})
           as (j & Hj & Hleast).
         iModIntro. iNext. iPureIntro. right. eexists.

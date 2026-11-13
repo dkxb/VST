@@ -52,10 +52,12 @@ Qed.
     Try; their physical threads may still carry the corresponding trace. *)
 Definition sqex_pending_config_inv `{!lrSqGS Σ} (C : sqex_threads Σ)
     (tp : tpool) (m : lr_mem) (mu : rw_map) : iProp Σ :=
+  (* FIXME upred *)
   ∃ p hF, uPred_ownM (sqex_state_resource m p hF) ∗
     ⌜sq_heap_name ≠ sq_freeable_name ∧ sqex_threads_coherent m p C ∧
       sq_freeable_rel m hF ∧ sqex_pool_matches C tp ∧
       sqex_pool_reservations tp m mu⌝ ∗
+    (* FIXME avoid this *)
     sqex_exact_threads_inv m hF C.
 
 Lemma sqex_pending_config_inv_init `{!lrSqGS Σ} i Φ e m :
@@ -262,28 +264,78 @@ Proof.
       iModIntro. iApply (step_fupdN_wand ∅ ∅ (S n) with "Hrun").
       iIntros "[Hsafe Hpost]". iFrame "Hsafe".
       by iApply (sqex_result_extend with "Hpost").
-    + (* CAS has no contract in lr_ext_specs. *)
+    + (* Successful CAS updates the cell and reconstructs its continuation. *)
       destruct (sqex_pool_matches_lookup_inv _ _ _ _ Hmatch Hget)
         as (c0 & T & Hc0 & Hthread_eq & _).
-      inversion Hthread_eq; subst.
-      iDestruct (big_sepM_lookup _ _ _ _ Hc0 with "Hthreads") as "Hthread".
+      inversion Hthread_eq; subst. destruct ly.
+      change (m0 !! l = Some v_cur) in Hload.
+      rewrite /= Hload in Hstore. inversion Hstore; subst.
+      iDestruct (big_sepM_delete _ _ _ _ Hc0 with "Hthreads") as "[Hthread Hothers]".
       iDestruct (sqex_exact_thread_wp with "Hthread") as "Hwp".
-      iEval (rewrite (exwp_ext_unfold _ _ _ _ _ Hext)) in "Hwp".
-      iMod "Hwp" as (x) "_". destruct x.
-    + destruct (sqex_pool_matches_lookup_inv _ _ _ _ Hmatch Hget)
+      iMod (sqex_external_cas_suc_pending ⊤ C tp0 m0 p hF mu0 i0
+        (sqex_thread_expr c0) K l v_exp v_new v_cur (sqex_thread_post c0)
+        Hnames Hrel HFrel Hvalid Hmatch Hres Hget Hext Hload Heq
+        with "Hstate Hwp Hothers") as "Hnext".
+      have Hallocated : is_Some (m0 !! l) by eexists.
+      have Hrel' : sq_heap_rel (<[l := v_new]> m0) p.
+      { unfold sq_heap_rel in *. rewrite dom_insert_L. set_solver. }
+      have HFrel' : sq_freeable_rel (<[l := v_new]> m0) hF.
+      { by eapply sq_freeable_rel_stable. }
+      have Hrels : forall j d, delete i0 C !! j = Some d ->
+          sq_heap_rel (<[l := v_new]> m0) (sqex_thread_perm d).
+      { intros j d Hd. apply (lookup_delete_Some (M := gmap nat)) in Hd as [_ Hd].
+        have Hdrel := proj2 (proj2 (proj2 Hcoherent)) _ _ Hd.
+        unfold sq_heap_rel in *. rewrite dom_insert_L. set_solver. }
+      iModIntro. simpl. iModIntro. iNext.
+      iMod "Hnext" as "(Hstate & Hwp & Hothers)".
+      iDestruct (sqex_ready_replace _ _ _ _ _ _ _ _ Hnames Hrel' Hc0 Hrels Hmatch
+        with "Hstate Hothers Hwp") as (pi) "(%Hnext & Hstate & Hthreads)".
+      destruct Hnext as (Hcoherent' & Hmatch' & Hposts).
+      have Hres_mem := sqex_pool_reservations_store _ _ _ _ v_new Hres Hallocated.
+      have Hres' := sqex_pool_reservations_ready_update _ _ _ _ _
+        (K (Some (LitV (LitInt 1)))) Hres_mem Hget.
+      iMod ("IH" with "[Hstate Hthreads] [] []") as "Hrun"; [ | done | done | ].
+      { iExists p, hF. iFrame. done. }
+      iModIntro. iApply (step_fupdN_wand ∅ ∅ (S n) with "Hrun").
+      iIntros "[Hsafe Hpost]". iFrame "Hsafe".
+      by iApply (sqex_result_extend with "Hpost").
+    + (* Failed CAS retains the old heap and returns false. *)
+      destruct (sqex_pool_matches_lookup_inv _ _ _ _ Hmatch Hget)
         as (c0 & T & Hc0 & Hthread_eq & _).
-      inversion Hthread_eq; subst.
-      iDestruct (big_sepM_lookup _ _ _ _ Hc0 with "Hthreads") as "Hthread".
+      inversion Hthread_eq; subst. destruct ly.
+      change (m0 !! l = Some v_cur) in Hload.
+      iDestruct (big_sepM_delete _ _ _ _ Hc0 with "Hthreads") as "[Hthread Hothers]".
       iDestruct (sqex_exact_thread_wp with "Hthread") as "Hwp".
-      iEval (rewrite (exwp_ext_unfold _ _ _ _ _ Hext)) in "Hwp".
-      iMod "Hwp" as (x) "_". destruct x.
-    + destruct (sqex_pool_matches_lookup_inv _ _ _ _ Hmatch Hget)
+      iMod (sqex_external_cas_fail_pending ⊤ C tp0 m0 p hF mu0 i0
+        (sqex_thread_expr c0) K l v_exp v_new v_cur (sqex_thread_post c0)
+        Hnames Hrel HFrel Hvalid Hmatch Hres Hget Hext Hload Hneq
+        with "Hstate Hwp Hothers") as "Hnext".
+      iModIntro. simpl. iModIntro. iNext.
+      iMod "Hnext" as "(Hstate & Hwp & Hothers)".
+      have Hrels : forall j d, delete i0 C !! j = Some d -> sq_heap_rel m0 (sqex_thread_perm d).
+      { intros j d Hd. apply (lookup_delete_Some (M := gmap nat)) in Hd as [_ Hd].
+        by eapply (proj2 (proj2 (proj2 Hcoherent))). }
+      iDestruct (sqex_ready_replace _ _ _ _ _ _ _ _ Hnames Hrel Hc0 Hrels Hmatch
+        with "Hstate Hothers Hwp") as (pi) "(%Hnext & Hstate & Hthreads)".
+      destruct Hnext as (Hcoherent' & Hmatch' & Hposts).
+      have Hres' := sqex_pool_reservations_ready_update _ _ _ _ _
+        (K (Some (LitV (LitInt 0)))) Hres Hget.
+      iMod ("IH" with "[Hstate Hthreads] [] []") as "Hrun"; [ | done | done | ].
+      { iExists p, hF. iFrame. done. }
+      iModIntro. iApply (step_fupdN_wand ∅ ∅ (S n) with "Hrun").
+      iIntros "[Hsafe Hpost]". iFrame "Hsafe".
+      by iApply (sqex_result_extend with "Hpost").
+    + (* Full ownership excludes the reservation failure that causes CAS UB. *)
+      destruct (sqex_pool_matches_lookup_inv _ _ _ _ Hmatch Hget)
         as (c0 & T & Hc0 & Hthread_eq & _).
-      inversion Hthread_eq; subst.
-      iDestruct (big_sepM_lookup _ _ _ _ Hc0 with "Hthreads") as "Hthread".
+      inversion Hthread_eq; subst. destruct ly.
+      iDestruct (big_sepM_delete _ _ _ _ Hc0 with "Hthreads") as "[Hthread Hothers]".
       iDestruct (sqex_exact_thread_wp with "Hthread") as "Hwp".
-      iEval (rewrite (exwp_ext_unfold _ _ _ _ _ Hext)) in "Hwp".
-      iMod "Hwp" as (x) "_". destruct x.
+      iMod (sqex_external_cas_writable ⊤ C tp0 m0 p hF mu0 i0
+        (sqex_thread_expr c0) K l v_exp v_new (sqex_thread_post c0)
+        Hnames Hrel HFrel Hvalid Hmatch Hres Hget Hext
+        with "Hstate Hwp Hothers") as %Hwritable.
+      exfalso. apply Ho. by apply Forall_singleton.
     + (* Spawn reconstructs parent and child while retaining all existing threads. *)
       destruct (sqex_pool_matches_lookup_inv _ _ _ _ Hmatch Hget)
         as (c0 & T & Hc0 & Hthread_eq & _).

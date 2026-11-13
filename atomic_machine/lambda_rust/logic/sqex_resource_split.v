@@ -421,6 +421,8 @@ Proof. apply big_opM_commute, uPred.uPred_ownM_sep_homomorphism. Qed.
 Section exact_threads.
   Context `{!lrSqGS Σ}.
 
+  (* Change to
+    EXWP ... * own perm_name (perm_frag (sq_ex_thread_perm c))*)
   Definition sqex_exact_thread_inv m hF (c : sqex_thread Σ) : iProp Σ :=
     ∃ r : iResUR Σ, uPred_ownM r ∗
       sqex_support (EXWP (sqex_thread_expr c) {{ v, sqex_thread_post c v }}) r ∗
